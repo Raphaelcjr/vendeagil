@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Package, ShoppingCart, Users, Store, Plus,
   TrendingUp, DollarSign, AlertTriangle, CheckCircle2,
   Clock, Share2, LogOut, Trash2, Edit3,
-  ShoppingBag, ChevronRight, X
+  ShoppingBag, ChevronRight, X, Calendar, PackagePlus
 } from 'lucide-react';
 
 const SUPABASE_URL = 'https://fuflpsnzgxjklbnpxnmb.supabase.co';
@@ -14,6 +14,40 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const formatBRL = (val) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(val) || 0);
+
+const getTodayISO = () => {
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  const local = new Date(now.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 10);
+};
+
+const getCurrentMonthKey = () => getTodayISO().slice(0, 7); // "YYYY-MM"
+
+const getRecordMonthKey = (record, dateField) => {
+  const rawDate = record?.[dateField] || record?.created_at;
+  if (!rawDate) return '';
+  return String(rawDate).slice(0, 7);
+};
+
+const formatMonthLabel = (ym) => {
+  if (!ym || ym === 'all') return 'Todos os meses';
+  const [year, month] = ym.split('-');
+  const months = [
+    'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
+  ];
+  const mIdx = Number(month) - 1;
+  return `${months[mIdx] || month}/${year}`;
+};
+
+const formatShortDate = (dateStr) => {
+  if (!dateStr) return '';
+  const clean = String(dateStr).slice(0, 10);
+  const [y, m, d] = clean.split('-');
+  if (!y || !m || !d) return dateStr;
+  return `${d}/${m}/${y}`;
+};
 
 function App() {
   const [session, setSession] = useState(null);
@@ -28,13 +62,24 @@ function App() {
   const [authMsg, setAuthMsg] = useState('');
 
   const [tab, setTab] = useState('dashboard');
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey());
+
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [purchases, setPurchases] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
 
   const [showProductModal, setShowProductModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+  const [purchaseForm, setPurchaseForm] = useState({
+    product_id: '',
+    quantity: 1,
+    total_cost: '',
+    purchase_date: getTodayISO()
+  });
+
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
 
@@ -82,14 +127,16 @@ function App() {
 
   const fetchAllData = async (userId) => {
     setLoadingData(true);
-    const [prodRes, custRes, ordRes] = await Promise.all([
+    const [prodRes, custRes, ordRes, purRes] = await Promise.all([
       supabase.from('products').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       supabase.from('customers').select('*').eq('user_id', userId).order('name', { ascending: true }),
-      supabase.from('orders').select('*').eq('user_id', userId).order('created_at', { ascending: false })
+      supabase.from('orders').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      supabase.from('purchases').select('*').eq('user_id', userId).order('purchase_date', { ascending: false })
     ]);
     setProducts(prodRes.data || []);
     setCustomers(custRes.data || []);
     setOrders(ordRes.data || []);
+    setPurchases(purRes.data || []);
     setLoadingData(false);
   };
 
@@ -112,13 +159,17 @@ function App() {
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
+    const costPrice = parseFloat(form.get('cost_price')) || 0;
+    const stock = parseInt(form.get('stock')) || 0;
+    const purchaseDate = form.get('purchase_date') || getTodayISO();
+
     const payload = {
       user_id: session.user.id,
       name: form.get('name'),
       category: form.get('category') || 'Geral',
-      cost_price: parseFloat(form.get('cost_price')) || 0,
+      cost_price: costPrice,
       sell_price: parseFloat(form.get('sell_price')) || 0,
-      stock: parseInt(form.get('stock')) || 0,
+      stock,
       min_stock: parseInt(form.get('min_stock')) || 3,
       image_url: form.get('image_url') || '',
       active: true
@@ -127,7 +178,18 @@ function App() {
     if (editingProduct) {
       await supabase.from('products').update(payload).eq('id', editingProduct.id);
     } else {
-      await supabase.from('products').insert([payload]);
+      const { data: created } = await supabase.from('products').insert([payload]).select().single();
+      if (stock > 0 && costPrice > 0) {
+        await supabase.from('purchases').insert([{
+          user_id: session.user.id,
+          product_id: created?.id || null,
+          product_name: payload.name,
+          quantity: stock,
+          unit_cost: costPrice,
+          total_cost: Number((stock * costPrice).toFixed(2)),
+          purchase_date: purchaseDate
+        }]);
+      }
     }
     setShowProductModal(false);
     setEditingProduct(null);
@@ -137,6 +199,45 @@ function App() {
   const handleDeleteProduct = async (id) => {
     if (!confirm('Excluir este produto?')) return;
     await supabase.from('products').delete().eq('id', id);
+    fetchAllData(session.user.id);
+  };
+
+  const openPurchaseModal = (preselectedProduct = null) => {
+    const target = preselectedProduct || products[0];
+    setPurchaseForm({
+      product_id: target ? target.id : '',
+      quantity: 1,
+      total_cost: target ? String(Number(target.cost_price) || '') : '',
+      purchase_date: getTodayISO()
+    });
+    setShowPurchaseModal(true);
+  };
+
+  const handleSavePurchase = async (e) => {
+    e.preventDefault();
+    const prod = products.find(p => p.id === purchaseForm.product_id);
+    const qty = Math.max(1, parseInt(purchaseForm.quantity) || 1);
+    const totalCost = Math.max(0, parseFloat(purchaseForm.total_cost) || 0);
+    const unitCost = qty > 0 ? Number((totalCost / qty).toFixed(2)) : 0;
+    const pDate = purchaseForm.purchase_date || getTodayISO();
+
+    await supabase.from('purchases').insert([{
+      user_id: session.user.id,
+      product_id: prod ? prod.id : null,
+      product_name: prod ? prod.name : 'Reposição de Estoque',
+      quantity: qty,
+      unit_cost: unitCost,
+      total_cost: totalCost,
+      purchase_date: pDate
+    }]);
+
+    if (prod) {
+      const updatePayload = { stock: Number(prod.stock || 0) + qty };
+      if (unitCost > 0) updatePayload.cost_price = unitCost;
+      await supabase.from('products').update(updatePayload).eq('id', prod.id);
+    }
+
+    setShowPurchaseModal(false);
     fetchAllData(session.user.id);
   };
 
@@ -160,7 +261,8 @@ function App() {
     payment_method: 'Pix',
     card_fee_percent: 0,
     discount: 0,
-    status: 'paid'
+    status: 'paid',
+    sale_date: getTodayISO()
   });
 
   const addSaleItem = (prodId) => {
@@ -183,6 +285,7 @@ function App() {
     const total = Math.max(0, subtotal - discount);
     const feeValue = total * ((Number(saleMeta.card_fee_percent) || 0) / 100);
     const netProfit = total - totalCost - feeValue;
+    const sDate = saleMeta.sale_date || getTodayISO();
 
     await supabase.from('orders').insert([{
       user_id: session.user.id,
@@ -194,6 +297,7 @@ function App() {
       total_amount: total,
       net_profit: netProfit,
       status: saleMeta.status,
+      sale_date: sDate,
       items: saleItems
     }]);
 
@@ -205,6 +309,7 @@ function App() {
     }
 
     setSaleItems([]);
+    setSaleMeta(prev => ({ ...prev, sale_date: getTodayISO(), discount: 0 }));
     setShowSaleModal(false);
     fetchAllData(session.user.id);
   };
@@ -237,6 +342,7 @@ function App() {
       total_amount: total,
       net_profit: total - totalCost,
       status: 'pending',
+      sale_date: getTodayISO(),
       items: cart.map(c => ({ id: c.id, name: c.name, price: Number(c.sell_price), cost: Number(c.cost_price || 0), qty: c.qty }))
     }]);
 
@@ -256,14 +362,53 @@ function App() {
     alert('Link do seu catálogo copiado:\n\n' + url);
   };
 
+  const availableMonths = useMemo(() => {
+    const set = new Set([getCurrentMonthKey()]);
+    orders.forEach(o => {
+      const m = getRecordMonthKey(o, 'sale_date');
+      if (m) set.add(m);
+    });
+    purchases.forEach(p => {
+      const m = getRecordMonthKey(p, 'purchase_date');
+      if (m) set.add(m);
+    });
+    return Array.from(set).sort().reverse();
+  }, [orders, purchases]);
+
+  const filteredOrders = useMemo(() => {
+    if (selectedMonth === 'all') return orders;
+    return orders.filter(o => getRecordMonthKey(o, 'sale_date') === selectedMonth);
+  }, [orders, selectedMonth]);
+
+  const filteredPurchases = useMemo(() => {
+    if (selectedMonth === 'all') return purchases;
+    return purchases.filter(p => getRecordMonthKey(p, 'purchase_date') === selectedMonth);
+  }, [purchases, selectedMonth]);
+
   const stats = useMemo(() => {
-    const validOrders = orders.filter(o => o.status !== 'cancelled');
+    const validOrders = filteredOrders.filter(o => o.status !== 'cancelled');
     const revenue = validOrders.reduce((acc, o) => acc + Number(o.total_amount), 0);
+    const unitsSold = validOrders.reduce(
+      (acc, o) => acc + (o.items || []).reduce((s, item) => s + (Number(item.qty) || 0), 0),
+      0
+    );
     const profit = validOrders.reduce((acc, o) => acc + Number(o.net_profit), 0);
-    const pending = orders.filter(o => o.status === 'pending').reduce((acc, o) => acc + Number(o.total_amount), 0);
+    const pending = filteredOrders
+      .filter(o => o.status === 'pending')
+      .reduce((acc, o) => acc + Number(o.total_amount), 0);
+    const spentInPurchases = filteredPurchases.reduce((acc, p) => acc + Number(p.total_cost), 0);
     const lowStock = products.filter(p => p.stock <= p.min_stock);
-    return { revenue, profit, pending, count: validOrders.length, lowStock };
-  }, [orders, products]);
+
+    return {
+      revenue,
+      unitsSold,
+      profit,
+      pending,
+      spentInPurchases,
+      count: validOrders.length,
+      lowStock
+    };
+  }, [filteredOrders, filteredPurchases, products]);
 
   if (isPublicCatalog) {
     const cartTotal = cart.reduce((acc, i) => acc + Number(i.sell_price) * i.qty, 0);
@@ -510,7 +655,10 @@ function App() {
               <span className="hidden sm:inline">Link Catálogo</span>
             </button>
             <button
-              onClick={() => setShowSaleModal(true)}
+              onClick={() => {
+                setSaleMeta(prev => ({ ...prev, sale_date: getTodayISO() }));
+                setShowSaleModal(true);
+              }}
               className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition"
             >
               <Plus className="w-4 h-4" />
@@ -531,7 +679,7 @@ function App() {
         {[
           { id: 'dashboard', label: 'Visão Geral', icon: LayoutDashboard },
           { id: 'orders', label: 'Pedidos & Vendas', icon: ShoppingCart },
-          { id: 'products', label: 'Produtos & Estoque', icon: Package },
+          { id: 'products', label: 'Produtos & Compras', icon: Package },
           { id: 'customers', label: 'Clientes', icon: Users }
         ].map(item => (
           <button
@@ -550,6 +698,25 @@ function App() {
       </div>
 
       <main className="max-w-5xl mx-auto p-4 space-y-5">
+        {/* Seletor de Mês */}
+        <div className="bg-[#111827] border border-slate-800 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs text-slate-300">
+            <Calendar className="w-4 h-4 text-emerald-400" />
+            <span className="font-semibold">Período analisado:</span>
+            <span className="text-emerald-400 font-bold">{formatMonthLabel(selectedMonth)}</span>
+          </div>
+          <select
+            value={selectedMonth}
+            onChange={e => setSelectedMonth(e.target.value)}
+            className="bg-[#090d16] border border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold text-white outline-none focus:border-emerald-500"
+          >
+            <option value="all">Todos os meses</option>
+            {availableMonths.map(m => (
+              <option key={m} value={m}>{formatMonthLabel(m)}</option>
+            ))}
+          </select>
+        </div>
+
         {tab === 'dashboard' && (
           <>
             {(products.length === 0 || orders.length === 0) && (
@@ -590,30 +757,47 @@ function App() {
 
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
-                <span className="text-xs text-slate-400 flex items-center gap-1.5"><DollarSign className="w-3.5 h-3.5 text-emerald-400" /> Faturamento</span>
+                <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                  <DollarSign className="w-3.5 h-3.5 text-emerald-400" /> Faturamento
+                </span>
                 <p className="text-xl font-bold text-white mt-1.5">{formatBRL(stats.revenue)}</p>
-                <span className="text-[11px] text-slate-500">{stats.count} vendas concluídas</span>
+                <span className="text-[11px] text-slate-500">
+                  {stats.count} vendas • {stats.unitsSold} un. vendidas
+                </span>
               </div>
+
               <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
-                <span className="text-xs text-slate-400 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5 text-emerald-400" /> Lucro Líquido</span>
+                <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                  <PackagePlus className="w-3.5 h-3.5 text-sky-400" /> Gasto em Compras
+                </span>
+                <p className="text-xl font-bold text-sky-400 mt-1.5">{formatBRL(stats.spentInPurchases)}</p>
+                <span className="text-[11px] text-slate-500">
+                  {filteredPurchases.length} compras no período
+                </span>
+              </div>
+
+              <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
+                <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-400" /> Lucro Líquido
+                </span>
                 <p className="text-xl font-bold text-emerald-400 mt-1.5">{formatBRL(stats.profit)}</p>
-                <span className="text-[11px] text-slate-500">Já descontando custo e taxa</span>
+                <span className="text-[11px] text-slate-500">Descontando custo e taxa</span>
               </div>
+
               <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
-                <span className="text-xs text-slate-400 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-400" /> A Receber</span>
+                <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" /> A Receber
+                </span>
                 <p className="text-xl font-bold text-amber-400 mt-1.5">{formatBRL(stats.pending)}</p>
                 <span className="text-[11px] text-slate-500">Pedidos pendentes / fiado</span>
-              </div>
-              <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
-                <span className="text-xs text-slate-400 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5 text-rose-400" /> Estoque Baixo</span>
-                <p className="text-xl font-bold text-white mt-1.5">{stats.lowStock.length}</p>
-                <span className="text-[11px] text-slate-500">Itens precisando repor</span>
               </div>
             </div>
 
             {stats.lowStock.length > 0 && (
               <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-4">
-                <h3 className="text-xs font-bold text-rose-300 uppercase tracking-wider mb-2">Atenção ao Estoque</h3>
+                <h3 className="text-xs font-bold text-rose-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5" /> Atenção ao Estoque ({stats.lowStock.length})
+                </h3>
                 <div className="flex flex-wrap gap-2">
                   {stats.lowStock.map(p => (
                     <span key={p.id} className="text-xs bg-[#090d16] border border-rose-500/30 px-2.5 py-1 rounded-lg text-slate-200">
@@ -626,18 +810,20 @@ function App() {
 
             <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold text-sm">Últimas Vendas</h3>
+                <h3 className="font-bold text-sm">Últimas Vendas ({formatMonthLabel(selectedMonth)})</h3>
                 <button onClick={() => setTab('orders')} className="text-xs text-emerald-400 hover:underline">Ver todas</button>
               </div>
-              {orders.length === 0 ? (
-                <p className="text-xs text-slate-500 py-6 text-center">Nenhuma venda registrada ainda.</p>
+              {filteredOrders.length === 0 ? (
+                <p className="text-xs text-slate-500 py-6 text-center">Nenhuma venda registrada neste período.</p>
               ) : (
                 <div className="space-y-2.5">
-                  {orders.slice(0, 5).map(ord => (
+                  {filteredOrders.slice(0, 5).map(ord => (
                     <div key={ord.id} className="flex items-center justify-between p-3 rounded-xl bg-[#090d16] border border-slate-800/80">
                       <div>
                         <p className="text-sm font-semibold">{ord.customer_name}</p>
-                        <p className="text-xs text-slate-400">{ord.channel} • {ord.payment_method}</p>
+                        <p className="text-xs text-slate-400">
+                          {formatShortDate(ord.sale_date || ord.created_at)} • {ord.channel} • {ord.payment_method}
+                        </p>
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-bold text-emerald-400">{formatBRL(ord.total_amount)}</p>
@@ -659,102 +845,166 @@ function App() {
         {tab === 'orders' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="font-bold text-lg">Pedidos e Vendas ({orders.length})</h2>
-              <button onClick={() => setShowSaleModal(true)} className="bg-emerald-500 text-slate-950 font-bold text-xs px-3.5 py-2 rounded-xl">
+              <h2 className="font-bold text-lg">Pedidos e Vendas ({filteredOrders.length})</h2>
+              <button
+                onClick={() => {
+                  setSaleMeta(prev => ({ ...prev, sale_date: getTodayISO() }));
+                  setShowSaleModal(true);
+                }}
+                className="bg-emerald-500 text-slate-950 font-bold text-xs px-3.5 py-2 rounded-xl"
+              >
                 + Nova Venda
               </button>
             </div>
-            {orders.map(ord => (
-              <div key={ord.id} className="bg-[#111827] border border-slate-800 rounded-2xl p-4 space-y-3">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <span className="text-[11px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md">{ord.channel}</span>
-                    <h3 className="font-bold text-base mt-1">{ord.customer_name}</h3>
-                    {ord.customer_phone && <p className="text-xs text-slate-400">WhatsApp: {ord.customer_phone}</p>}
-                  </div>
-                  <div className="text-right">
-                    <p className="text-lg font-bold text-emerald-400">{formatBRL(ord.total_amount)}</p>
-                    <p className="text-[11px] text-slate-400">Lucro: {formatBRL(ord.net_profit)}</p>
-                  </div>
-                </div>
-                <div className="text-xs text-slate-300 bg-[#090d16] p-2.5 rounded-xl border border-slate-800/80">
-                  {(ord.items || []).map((i, idx) => (
-                    <div key={idx} className="flex justify-between py-0.5">
-                      <span>{i.qty}x {i.name}</span>
-                      <span>{formatBRL(i.price * i.qty)}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between pt-1">
-                  <span className={`text-xs font-semibold ${
-                    ord.status === 'paid' ? 'text-emerald-400' : ord.status === 'pending' ? 'text-amber-400' : 'text-rose-400'
-                  }`}>
-                    Status: {ord.status === 'paid' ? 'Pago' : ord.status === 'pending' ? 'Aguardando Pagamento' : 'Cancelado'}
-                  </span>
-                  <div className="flex gap-2">
-                    {ord.status === 'pending' && (
-                      <button
-                        onClick={() => handleOrderStatus(ord, 'paid')}
-                        className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-3 py-1.5 rounded-lg text-xs font-semibold"
-                      >
-                        Marcar Pago
-                      </button>
-                    )}
-                    {ord.status !== 'cancelled' && (
-                      <button
-                        onClick={() => handleOrderStatus(ord, 'cancelled')}
-                        className="bg-rose-500/15 text-rose-400 px-3 py-1.5 rounded-lg text-xs"
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
-                </div>
+            {filteredOrders.length === 0 ? (
+              <div className="bg-[#111827] border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
+                Nenhuma venda encontrada para {formatMonthLabel(selectedMonth)}.
               </div>
-            ))}
+            ) : (
+              filteredOrders.map(ord => (
+                <div key={ord.id} className="bg-[#111827] border border-slate-800 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md">{ord.channel}</span>
+                        <span className="text-[11px] text-slate-400">Data: {formatShortDate(ord.sale_date || ord.created_at)}</span>
+                      </div>
+                      <h3 className="font-bold text-base mt-1">{ord.customer_name}</h3>
+                      {ord.customer_phone && <p className="text-xs text-slate-400">WhatsApp: {ord.customer_phone}</p>}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-lg font-bold text-emerald-400">{formatBRL(ord.total_amount)}</p>
+                      <p className="text-[11px] text-slate-400">Lucro: {formatBRL(ord.net_profit)}</p>
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-300 bg-[#090d16] p-2.5 rounded-xl border border-slate-800/80">
+                    {(ord.items || []).map((i, idx) => (
+                      <div key={idx} className="flex justify-between py-0.5">
+                        <span>{i.qty}x {i.name}</span>
+                        <span>{formatBRL(i.price * i.qty)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className={`text-xs font-semibold ${
+                      ord.status === 'paid' ? 'text-emerald-400' : ord.status === 'pending' ? 'text-amber-400' : 'text-rose-400'
+                    }`}>
+                      Status: {ord.status === 'paid' ? 'Pago' : ord.status === 'pending' ? 'Aguardando Pagamento' : 'Cancelado'}
+                    </span>
+                    <div className="flex gap-2">
+                      {ord.status === 'pending' && (
+                        <button
+                          onClick={() => handleOrderStatus(ord, 'paid')}
+                          className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-3 py-1.5 rounded-lg text-xs font-semibold"
+                        >
+                          Marcar Pago
+                        </button>
+                      )}
+                      {ord.status !== 'cancelled' && (
+                        <button
+                          onClick={() => handleOrderStatus(ord, 'cancelled')}
+                          className="bg-rose-500/15 text-rose-400 px-3 py-1.5 rounded-lg text-xs"
+                        >
+                          Cancelar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         )}
 
         {tab === 'products' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-bold text-lg">Produtos ({products.length})</h2>
-              <button
-                onClick={() => { setEditingProduct(null); setShowProductModal(true); }}
-                className="bg-emerald-500 text-slate-950 font-bold text-xs px-3.5 py-2 rounded-xl"
-              >
-                + Novo Produto
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {products.map(p => (
-                <div key={p.id} className="bg-[#111827] border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
-                  <div>
-                    <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded">{p.category}</span>
-                    <h3 className="font-bold text-sm mt-1">{p.name}</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Custo: {formatBRL(p.cost_price)} • <strong className="text-emerald-400">Venda: {formatBRL(p.sell_price)}</strong>
-                    </p>
-                    <p className={`text-xs mt-1 font-medium ${p.stock <= p.min_stock ? 'text-rose-400' : 'text-slate-300'}`}>
-                      Estoque: {p.stock} unidades
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <button
-                      onClick={() => { setEditingProduct(p); setShowProductModal(true); }}
-                      className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteProduct(p.id)}
-                      className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+          <div className="space-y-5">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-bold text-lg">Produtos ({products.length})</h2>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => openPurchaseModal()}
+                    className="bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 border border-sky-500/40 font-bold text-xs px-3.5 py-2 rounded-xl"
+                  >
+                    + Registrar Compra
+                  </button>
+                  <button
+                    onClick={() => { setEditingProduct(null); setShowProductModal(true); }}
+                    className="bg-emerald-500 text-slate-950 font-bold text-xs px-3.5 py-2 rounded-xl"
+                  >
+                    + Novo Produto
+                  </button>
                 </div>
-              ))}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {products.map(p => (
+                  <div key={p.id} className="bg-[#111827] border border-slate-800 rounded-2xl p-4 flex items-center justify-between gap-3">
+                    <div>
+                      <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded">{p.category}</span>
+                      <h3 className="font-bold text-sm mt-1">{p.name}</h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Custo: {formatBRL(p.cost_price)} • <strong className="text-emerald-400">Venda: {formatBRL(p.sell_price)}</strong>
+                      </p>
+                      <p className={`text-xs mt-1 font-medium ${p.stock <= p.min_stock ? 'text-rose-400' : 'text-slate-300'}`}>
+                        Estoque: {p.stock} unidades
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        onClick={() => openPurchaseModal(p)}
+                        title="Repor estoque com data de compra"
+                        className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 text-sky-400 hover:bg-sky-500/25 text-[11px] font-semibold"
+                      >
+                        Repor
+                      </button>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => { setEditingProduct(p); setShowProductModal(true); }}
+                          className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteProduct(p.id)}
+                          className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Histórico de Compras / Reposições */}
+            <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm">
+                  Compras / Reposições — {formatMonthLabel(selectedMonth)}
+                </h3>
+                <span className="text-xs font-bold text-sky-400">
+                  Total: {formatBRL(stats.spentInPurchases)}
+                </span>
+              </div>
+              {filteredPurchases.length === 0 ? (
+                <p className="text-xs text-slate-500 py-4 text-center">Nenhuma compra registrada neste período.</p>
+              ) : (
+                <div className="space-y-2">
+                  {filteredPurchases.map(pur => (
+                    <div key={pur.id} className="flex items-center justify-between p-3 rounded-xl bg-[#090d16] border border-slate-800/80 text-xs">
+                      <div>
+                        <p className="font-semibold text-white">{pur.product_name || 'Compra de Estoque'}</p>
+                        <p className="text-slate-400">
+                          Data: {formatShortDate(pur.purchase_date)} • {pur.quantity} un. ({formatBRL(pur.unit_cost)}/un.)
+                        </p>
+                      </div>
+                      <span className="font-bold text-sky-400">{formatBRL(pur.total_cost)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -803,6 +1053,7 @@ function App() {
         ))}
       </nav>
 
+      {/* Modal Novo / Editar Produto */}
       {showProductModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
@@ -833,6 +1084,17 @@ function App() {
                   <input name="min_stock" type="number" defaultValue={editingProduct?.min_stock ?? 3} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
                 </div>
               </div>
+              {!editingProduct && (
+                <div>
+                  <label className="text-[11px] text-slate-400">Data da Compra (para gasto mensal)</label>
+                  <input
+                    name="purchase_date"
+                    type="date"
+                    defaultValue={getTodayISO()}
+                    className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                  />
+                </div>
+              )}
               <button type="submit" className="w-full bg-emerald-500 text-slate-950 font-bold py-3 rounded-xl text-sm">
                 Salvar Produto
               </button>
@@ -841,6 +1103,78 @@ function App() {
         </div>
       )}
 
+      {/* Modal Registrar Compra / Reposição */}
+      {showPurchaseModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-base">Registrar Compra / Repor Estoque</h3>
+              <button onClick={() => setShowPurchaseModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
+            </div>
+            <form onSubmit={handleSavePurchase} className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-400">Produto</label>
+                <select
+                  value={purchaseForm.product_id}
+                  onChange={e => {
+                    const p = products.find(pr => pr.id === e.target.value);
+                    const qty = Number(purchaseForm.quantity) || 1;
+                    setPurchaseForm(prev => ({
+                      ...prev,
+                      product_id: e.target.value,
+                      total_cost: p ? String(Number((Number(p.cost_price || 0) * qty).toFixed(2))) : prev.total_cost
+                    }));
+                  }}
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2.5 text-sm"
+                >
+                  {products.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} (Atual: {p.stock} un.)</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] text-slate-400">Quantidade Comprada</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={purchaseForm.quantity}
+                    onChange={e => setPurchaseForm({ ...purchaseForm, quantity: e.target.value })}
+                    className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400">Valor Total Pago (R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={purchaseForm.total_cost}
+                    onChange={e => setPurchaseForm({ ...purchaseForm, total_cost: e.target.value })}
+                    className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Data da Compra</label>
+                <input
+                  type="date"
+                  required
+                  value={purchaseForm.purchase_date}
+                  onChange={e => setPurchaseForm({ ...purchaseForm, purchase_date: e.target.value })}
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                />
+              </div>
+              <button type="submit" className="w-full bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold py-3 rounded-xl text-sm">
+                Salvar Compra e Atualizar Estoque
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Nova Venda */}
       {showSaleModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
@@ -875,6 +1209,17 @@ function App() {
                   ))}
                 </div>
               )}
+
+              <div>
+                <label className="text-[11px] text-slate-400">Data da Venda</label>
+                <input
+                  type="date"
+                  required
+                  value={saleMeta.sale_date}
+                  onChange={e => setSaleMeta({ ...saleMeta, sale_date: e.target.value })}
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2 text-sm"
+                />
+              </div>
 
               <input
                 placeholder="Nome do cliente (ou Cliente Balcão)"
