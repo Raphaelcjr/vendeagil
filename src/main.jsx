@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Package, ShoppingCart, Users, Store, Plus,
   TrendingUp, DollarSign, AlertTriangle, CheckCircle2,
   Clock, Share2, LogOut, Trash2, Edit3,
-  ShoppingBag, ChevronRight, X, Calendar, PackagePlus
+  ShoppingBag, ChevronRight, X, Calendar, PackagePlus, Wallet
 } from 'lucide-react';
 
 const SUPABASE_URL = 'https://fuflpsnzgxjklbnpxnmb.supabase.co';
@@ -22,7 +22,7 @@ const getTodayISO = () => {
   return local.toISOString().slice(0, 10);
 };
 
-const getCurrentMonthKey = () => getTodayISO().slice(0, 7); // "YYYY-MM"
+const getCurrentMonthKey = () => getTodayISO().slice(0, 7);
 
 const getRecordMonthKey = (record, dateField) => {
   const rawDate = record?.[dateField] || record?.created_at;
@@ -399,12 +399,23 @@ function App() {
     const spentInPurchases = filteredPurchases.reduce((acc, p) => acc + Number(p.total_cost), 0);
     const lowStock = products.filter(p => p.stock <= p.min_stock);
 
+    const stockPotentialRevenue = products.reduce(
+      (acc, p) => acc + Math.max(0, Number(p.stock || 0)) * Number(p.sell_price || 0),
+      0
+    );
+    const stockUnitsTotal = products.reduce(
+      (acc, p) => acc + Math.max(0, Number(p.stock || 0)),
+      0
+    );
+
     return {
       revenue,
       unitsSold,
       profit,
       pending,
       spentInPurchases,
+      stockPotentialRevenue,
+      stockUnitsTotal,
       count: validOrders.length,
       lowStock
     };
@@ -698,7 +709,6 @@ function App() {
       </div>
 
       <main className="max-w-5xl mx-auto p-4 space-y-5">
-        {/* Seletor de Mês */}
         <div className="bg-[#111827] border border-slate-800 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-xs text-slate-300">
             <Calendar className="w-4 h-4 text-emerald-400" />
@@ -755,7 +765,7 @@ function App() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
               <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
                 <span className="text-xs text-slate-400 flex items-center gap-1.5">
                   <DollarSign className="w-3.5 h-3.5 text-emerald-400" /> Faturamento
@@ -785,6 +795,16 @@ function App() {
               </div>
 
               <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
+                <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                  <Wallet className="w-3.5 h-3.5 text-violet-400" /> Valor em Estoque
+                </span>
+                <p className="text-xl font-bold text-violet-400 mt-1.5">{formatBRL(stats.stockPotentialRevenue)}</p>
+                <span className="text-[11px] text-slate-500">
+                  {stats.stockUnitsTotal} un. a vender
+                </span>
+              </div>
+
+              <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4 col-span-2 lg:col-span-1">
                 <span className="text-xs text-slate-400 flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 text-amber-400" /> A Receber
                 </span>
@@ -978,7 +998,6 @@ function App() {
               </div>
             </div>
 
-            {/* Histórico de Compras / Reposições */}
             <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-bold text-sm">
@@ -1053,7 +1072,6 @@ function App() {
         ))}
       </nav>
 
-      {/* Modal Novo / Editar Produto */}
       {showProductModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
@@ -1091,7 +1109,7 @@ function App() {
                     name="purchase_date"
                     type="date"
                     defaultValue={getTodayISO()}
-                    className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                    className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm [color-scheme:dark]"
                   />
                 </div>
               )}
@@ -1103,7 +1121,6 @@ function App() {
         </div>
       )}
 
-      {/* Modal Registrar Compra / Reposição */}
       {showPurchaseModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
@@ -1163,7 +1180,7 @@ function App() {
                   required
                   value={purchaseForm.purchase_date}
                   onChange={e => setPurchaseForm({ ...purchaseForm, purchase_date: e.target.value })}
-                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm [color-scheme:dark]"
                 />
               </div>
               <button type="submit" className="w-full bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold py-3 rounded-xl text-sm">
@@ -1174,7 +1191,6 @@ function App() {
         </div>
       )}
 
-      {/* Modal Nova Venda */}
       {showSaleModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
@@ -1217,7 +1233,7 @@ function App() {
                   required
                   value={saleMeta.sale_date}
                   onChange={e => setSaleMeta({ ...saleMeta, sale_date: e.target.value })}
-                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2 text-sm"
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2 text-sm [color-scheme:dark]"
                 />
               </div>
 
