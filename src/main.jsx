@@ -177,6 +177,15 @@ function App() {
     }
   };
 
+  const getProductLatestPurchase = (prod) => {
+    if (!prod) return null;
+    return (
+      purchases.find(pur => pur.product_id === prod.id) ||
+      purchases.find(pur => pur.product_name && pur.product_name.toLowerCase() === prod.name.toLowerCase()) ||
+      null
+    );
+  };
+
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
@@ -198,6 +207,28 @@ function App() {
 
     if (editingProduct) {
       await supabase.from('products').update(payload).eq('id', editingProduct.id);
+      const linkedPurchase = getProductLatestPurchase(editingProduct);
+      if (linkedPurchase) {
+        await supabase
+          .from('purchases')
+          .update({
+            product_id: editingProduct.id,
+            product_name: payload.name,
+            purchase_date: purchaseDate
+          })
+          .eq('id', linkedPurchase.id);
+      } else if (costPrice > 0) {
+        const qtyForRecord = stock > 0 ? stock : 1;
+        await supabase.from('purchases').insert([{
+          user_id: session.user.id,
+          product_id: editingProduct.id,
+          product_name: payload.name,
+          quantity: qtyForRecord,
+          unit_cost: costPrice,
+          total_cost: Number((qtyForRecord * costPrice).toFixed(2)),
+          purchase_date: purchaseDate
+        }]);
+      }
     } else {
       const { data: created } = await supabase.from('products').insert([payload]).select().single();
       if (stock > 0 && costPrice > 0) {
@@ -707,6 +738,8 @@ function App() {
     );
   }
 
+  const editingProductLinkedPurchase = editingProduct ? getProductLatestPurchase(editingProduct) : null;
+
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 pb-24 md:pb-8">
       <header className="sticky top-0 z-30 bg-[#0d1320]/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-3.5">
@@ -1045,7 +1078,7 @@ function App() {
                       <div className="flex gap-1.5">
                         <button
                           onClick={() => { setEditingProduct(p); setShowProductModal(true); }}
-                          title="Editar produto"
+                          title="Editar produto e data da compra"
                           className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
                         >
                           <Edit3 className="w-4 h-4" />
@@ -1169,7 +1202,7 @@ function App() {
               <h3 className="font-bold text-base">{editingProduct ? 'Editar Produto' : 'Novo Produto'}</h3>
               <button onClick={() => setShowProductModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
             </div>
-            <form onSubmit={handleSaveProduct} className="space-y-3">
+            <form key={editingProduct?.id || 'new-product'} onSubmit={handleSaveProduct} className="space-y-3">
               <input name="name" required defaultValue={editingProduct?.name} placeholder="Nome do produto" className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm" />
               <input name="category" defaultValue={editingProduct?.category || 'Geral'} placeholder="Categoria" className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm" />
               <div className="grid grid-cols-2 gap-2.5">
@@ -1192,19 +1225,21 @@ function App() {
                   <input name="min_stock" type="number" defaultValue={editingProduct?.min_stock ?? 3} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
                 </div>
               </div>
-              {!editingProduct && (
-                <div>
-                  <label className="text-[11px] text-slate-400">Data da Compra (para gasto mensal)</label>
-                  <input
-                    name="purchase_date"
-                    type="date"
-                    min="2000-01-01"
-                    max="2099-12-31"
-                    defaultValue={getTodayISO()}
-                    className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm [color-scheme:dark]"
-                  />
-                </div>
-              )}
+              <div>
+                <label className="text-[11px] text-slate-400">Data da Compra (para gasto mensal)</label>
+                <input
+                  name="purchase_date"
+                  type="date"
+                  min="2000-01-01"
+                  max="2099-12-31"
+                  defaultValue={
+                    editingProduct
+                      ? normalizeDateInput(editingProductLinkedPurchase?.purchase_date || editingProduct.created_at)
+                      : getTodayISO()
+                  }
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm [color-scheme:dark]"
+                />
+              </div>
               <button type="submit" className="w-full bg-emerald-500 text-slate-950 font-bold py-3 rounded-xl text-sm">
                 Salvar Produto
               </button>
