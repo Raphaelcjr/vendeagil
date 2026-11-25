@@ -67,6 +67,12 @@ const normalizeDateInput = (raw) => {
   return getTodayISO();
 };
 
+const isLowStockProduct = (p) => {
+  const min = Number(p.min_stock ?? 0);
+  if (min <= 0) return false;
+  return Number(p.stock ?? 0) <= min;
+};
+
 function App() {
   const [session, setSession] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
@@ -190,7 +196,10 @@ function App() {
     e.preventDefault();
     const form = new FormData(e.target);
     const costPrice = parseFloat(form.get('cost_price')) || 0;
-    const stock = parseInt(form.get('stock')) || 0;
+    const rawStock = form.get('stock');
+    const stock = rawStock === '' || rawStock === null ? 0 : Math.max(0, parseInt(rawStock, 10) || 0);
+    const rawMinStock = form.get('min_stock');
+    const minStock = rawMinStock === '' || rawMinStock === null ? 3 : Math.max(0, parseInt(rawMinStock, 10) || 0);
     const purchaseDate = form.get('purchase_date') || getTodayISO();
 
     const payload = {
@@ -200,7 +209,7 @@ function App() {
       cost_price: costPrice,
       sell_price: parseFloat(form.get('sell_price')) || 0,
       stock,
-      min_stock: parseInt(form.get('min_stock')) || 3,
+      min_stock: minStock,
       image_url: form.get('image_url') || '',
       active: true
     };
@@ -492,7 +501,7 @@ function App() {
       .filter(o => o.status === 'pending')
       .reduce((acc, o) => acc + Number(o.total_amount), 0);
     const spentInPurchases = filteredPurchases.reduce((acc, p) => acc + Number(p.total_cost), 0);
-    const lowStock = products.filter(p => p.stock <= p.min_stock);
+    const lowStock = products.filter(isLowStockProduct);
 
     const stockPotentialRevenue = products.reduce(
       (acc, p) => acc + Math.max(0, Number(p.stock || 0)) * Number(p.sell_price || 0),
@@ -1063,8 +1072,8 @@ function App() {
                       <p className="text-xs text-slate-400 mt-0.5">
                         Custo: {formatBRL(p.cost_price)} • <strong className="text-emerald-400">Venda: {formatBRL(p.sell_price)}</strong>
                       </p>
-                      <p className={`text-xs mt-1 font-medium ${p.stock <= p.min_stock ? 'text-rose-400' : 'text-slate-300'}`}>
-                        Estoque: {p.stock} unidades
+                      <p className={`text-xs mt-1 font-medium ${isLowStockProduct(p) ? 'text-rose-400' : 'text-slate-300'}`}>
+                        Estoque: {p.stock} unidades {Number(p.min_stock ?? 0) === 0 ? '• sem alerta' : ''}
                       </p>
                     </div>
                     <div className="flex flex-col gap-1.5">
@@ -1208,7 +1217,7 @@ function App() {
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
                   <label className="text-[11px] text-slate-400">Preço de Custo (R$)</label>
-                  <input name="cost_price" type="number" step="0.01" defaultValue={editingProduct?.cost_price || 0} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+                  <input name="cost_price" type="number" step="0.01" defaultValue={editingProduct?.cost_price ?? 0} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
                 </div>
                 <div>
                   <label className="text-[11px] text-slate-400">Preço de Venda (R$)</label>
@@ -1218,11 +1227,11 @@ function App() {
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
                   <label className="text-[11px] text-slate-400">Estoque Atual</label>
-                  <input name="stock" type="number" required defaultValue={editingProduct?.stock ?? 1} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+                  <input name="stock" type="number" min="0" required defaultValue={editingProduct?.stock ?? 1} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
                 </div>
                 <div>
-                  <label className="text-[11px] text-slate-400">Alerta Estoque Mínimo</label>
-                  <input name="min_stock" type="number" defaultValue={editingProduct?.min_stock ?? 3} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+                  <label className="text-[11px] text-slate-400">Alerta Mínimo (0 = sem alerta)</label>
+                  <input name="min_stock" type="number" min="0" defaultValue={editingProduct?.min_stock ?? 3} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm" />
                 </div>
               </div>
               <div>
