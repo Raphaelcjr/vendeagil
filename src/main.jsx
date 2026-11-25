@@ -27,26 +27,44 @@ const getCurrentMonthKey = () => getTodayISO().slice(0, 7);
 const getRecordMonthKey = (record, dateField) => {
   const rawDate = record?.[dateField] || record?.created_at;
   if (!rawDate) return '';
-  return String(rawDate).slice(0, 7);
+  const str = String(rawDate).slice(0, 10);
+  const parts = str.split('-');
+  if (parts.length < 2) return '';
+  const year = parts[0];
+  const month = parts[1].padStart(2, '0');
+  if (year.length !== 4 || Number(month) < 1 || Number(month) > 12) return 'invalid-date';
+  return `${year}-${month}`;
 };
 
 const formatMonthLabel = (ym) => {
   if (!ym || ym === 'all') return 'Todos os meses';
+  if (ym === 'invalid-date') return 'Datas com erro (corrigir)';
   const [year, month] = ym.split('-');
   const months = [
     'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
     'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
   ];
   const mIdx = Number(month) - 1;
-  return `${months[mIdx] || month}/${year}`;
+  if (!year || year.length !== 4 || mIdx < 0 || mIdx > 11) {
+    return `Data inválida (${ym})`;
+  }
+  return `${months[mIdx]}/${year}`;
 };
 
 const formatShortDate = (dateStr) => {
-  if (!dateStr) return '';
+  if (!dateStr) return 'Sem data';
   const clean = String(dateStr).slice(0, 10);
   const [y, m, d] = clean.split('-');
   if (!y || !m || !d) return dateStr;
   return `${d}/${m}/${y}`;
+};
+
+const normalizeDateInput = (raw) => {
+  if (!raw) return getTodayISO();
+  const clean = String(raw).slice(0, 10);
+  const parts = clean.split('-');
+  if (parts.length === 3 && parts[0].length === 4) return clean;
+  return getTodayISO();
 };
 
 function App() {
@@ -72,9 +90,12 @@ function App() {
 
   const [showProductModal, setShowProductModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+
   const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+  const [editingPurchase, setEditingPurchase] = useState(null);
   const [purchaseForm, setPurchaseForm] = useState({
     product_id: '',
+    product_name: '',
     quantity: 1,
     total_cost: '',
     purchase_date: getTodayISO()
@@ -203,12 +224,27 @@ function App() {
   };
 
   const openPurchaseModal = (preselectedProduct = null) => {
+    setEditingPurchase(null);
     const target = preselectedProduct || products[0];
     setPurchaseForm({
       product_id: target ? target.id : '',
+      product_name: target ? target.name : '',
       quantity: 1,
       total_cost: target ? String(Number(target.cost_price) || '') : '',
       purchase_date: getTodayISO()
+    });
+    setShowPurchaseModal(true);
+  };
+
+  const openEditPurchaseModal = (pur) => {
+    setEditingPurchase(pur);
+    const matchedProd = products.find(p => p.id === pur.product_id) || products.find(p => p.name === pur.product_name);
+    setPurchaseForm({
+      product_id: matchedProd ? matchedProd.id : (pur.product_id || ''),
+      product_name: pur.product_name || matchedProd?.name || '',
+      quantity: pur.quantity || 1,
+      total_cost: String(Number(pur.total_cost) || 0),
+      purchase_date: normalizeDateInput(pur.purchase_date)
     });
     setShowPurchaseModal(true);
   };
@@ -220,24 +256,46 @@ function App() {
     const totalCost = Math.max(0, parseFloat(purchaseForm.total_cost) || 0);
     const unitCost = qty > 0 ? Number((totalCost / qty).toFixed(2)) : 0;
     const pDate = purchaseForm.purchase_date || getTodayISO();
+    const finalName = prod ? prod.name : (purchaseForm.product_name || 'Reposição de Estoque');
 
-    await supabase.from('purchases').insert([{
-      user_id: session.user.id,
-      product_id: prod ? prod.id : null,
-      product_name: prod ? prod.name : 'Reposição de Estoque',
-      quantity: qty,
-      unit_cost: unitCost,
-      total_cost: totalCost,
-      purchase_date: pDate
-    }]);
+    if (editingPurchase) {
+      await supabase
+        .from('purchases')
+        .update({
+          product_id: prod ? prod.id : editingPurchase.product_id,
+          product_name: finalName,
+          quantity: qty,
+          unit_cost: unitCost,
+          total_cost: totalCost,
+          purchase_date: pDate
+        })
+        .eq('id', editingPurchase.id);
+    } else {
+      await supabase.from('purchases').insert([{
+        user_id: session.user.id,
+        product_id: prod ? prod.id : null,
+        product_name: finalName,
+        quantity: qty,
+        unit_cost: unitCost,
+        total_cost: totalCost,
+        purchase_date: pDate
+      }]);
 
-    if (prod) {
-      const updatePayload = { stock: Number(prod.stock || 0) + qty };
-      if (unitCost > 0) updatePayload.cost_price = unitCost;
-      await supabase.from('products').update(updatePayload).eq('id', prod.id);
+      if (prod) {
+        const updatePayload = { stock: Number(prod.stock || 0) + qty };
+        if (unitCost > 0) updatePayload.cost_price = unitCost;
+        await supabase.from('products').update(updatePayload).eq('id', prod.id);
+      }
     }
 
+    setEditingPurchase(null);
     setShowPurchaseModal(false);
+    fetchAllData(session.user.id);
+  };
+
+  const handleDeletePurchase = async (id) => {
+    if (!confirm('Excluir este registro de compra?')) return;
+    await supabase.from('purchases').delete().eq('id', id);
     fetchAllData(session.user.id);
   };
 
@@ -360,6 +418,12 @@ function App() {
     const url = `${window.location.origin}/?loja=${session.user.id}`;
     navigator.clipboard.writeText(url);
     alert('Link do seu catálogo copiado:\n\n' + url);
+  };
+
+  const resolvePurchaseProductName = (pur) => {
+    if (pur.product_name && pur.product_name !== 'Reposição de Estoque') return pur.product_name;
+    const found = products.find(p => p.id === pur.product_id);
+    return found ? found.name : (pur.product_name || 'Produto não identificado');
   };
 
   const availableMonths = useMemo(() => {
@@ -981,12 +1045,14 @@ function App() {
                       <div className="flex gap-1.5">
                         <button
                           onClick={() => { setEditingProduct(p); setShowProductModal(true); }}
+                          title="Editar produto"
                           className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
                         >
                           <Edit3 className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => handleDeleteProduct(p.id)}
+                          title="Excluir produto"
                           className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -1011,17 +1077,41 @@ function App() {
                 <p className="text-xs text-slate-500 py-4 text-center">Nenhuma compra registrada neste período.</p>
               ) : (
                 <div className="space-y-2">
-                  {filteredPurchases.map(pur => (
-                    <div key={pur.id} className="flex items-center justify-between p-3 rounded-xl bg-[#090d16] border border-slate-800/80 text-xs">
-                      <div>
-                        <p className="font-semibold text-white">{pur.product_name || 'Compra de Estoque'}</p>
-                        <p className="text-slate-400">
-                          Data: {formatShortDate(pur.purchase_date)} • {pur.quantity} un. ({formatBRL(pur.unit_cost)}/un.)
-                        </p>
+                  {filteredPurchases.map(pur => {
+                    const isBadDate = getRecordMonthKey(pur, 'purchase_date') === 'invalid-date';
+                    return (
+                      <div
+                        key={pur.id}
+                        className={`flex items-center justify-between gap-2 p-3 rounded-xl bg-[#090d16] border text-xs ${
+                          isBadDate ? 'border-amber-500/50' : 'border-slate-800/80'
+                        }`}
+                      >
+                        <div>
+                          <p className="font-semibold text-white">{resolvePurchaseProductName(pur)}</p>
+                          <p className={isBadDate ? 'text-amber-400 font-medium' : 'text-slate-400'}>
+                            Data: {formatShortDate(pur.purchase_date)} • {pur.quantity} un. ({formatBRL(pur.unit_cost)}/un.)
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-bold text-sky-400 mr-1">{formatBRL(pur.total_cost)}</span>
+                          <button
+                            onClick={() => openEditPurchaseModal(pur)}
+                            title="Editar data, produto ou valor da compra"
+                            className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeletePurchase(pur.id)}
+                            title="Excluir compra"
+                            className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <span className="font-bold text-sky-400">{formatBRL(pur.total_cost)}</span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1108,6 +1198,8 @@ function App() {
                   <input
                     name="purchase_date"
                     type="date"
+                    min="2000-01-01"
+                    max="2099-12-31"
                     defaultValue={getTodayISO()}
                     className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm [color-scheme:dark]"
                   />
@@ -1125,8 +1217,10 @@ function App() {
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-base">Registrar Compra / Repor Estoque</h3>
-              <button onClick={() => setShowPurchaseModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
+              <h3 className="font-bold text-base">
+                {editingPurchase ? 'Editar Compra / Data' : 'Registrar Compra / Repor Estoque'}
+              </h3>
+              <button onClick={() => { setShowPurchaseModal(false); setEditingPurchase(null); }}><X className="w-4 h-4 text-slate-400" /></button>
             </div>
             <form onSubmit={handleSavePurchase} className="space-y-3">
               <div>
@@ -1139,7 +1233,10 @@ function App() {
                     setPurchaseForm(prev => ({
                       ...prev,
                       product_id: e.target.value,
-                      total_cost: p ? String(Number((Number(p.cost_price || 0) * qty).toFixed(2))) : prev.total_cost
+                      product_name: p ? p.name : prev.product_name,
+                      total_cost: !editingPurchase && p
+                        ? String(Number((Number(p.cost_price || 0) * qty).toFixed(2)))
+                        : prev.total_cost
                     }));
                   }}
                   className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2.5 text-sm"
@@ -1177,6 +1274,8 @@ function App() {
                 <label className="text-[11px] text-slate-400">Data da Compra</label>
                 <input
                   type="date"
+                  min="2000-01-01"
+                  max="2099-12-31"
                   required
                   value={purchaseForm.purchase_date}
                   onChange={e => setPurchaseForm({ ...purchaseForm, purchase_date: e.target.value })}
@@ -1184,7 +1283,7 @@ function App() {
                 />
               </div>
               <button type="submit" className="w-full bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold py-3 rounded-xl text-sm">
-                Salvar Compra e Atualizar Estoque
+                {editingPurchase ? 'Salvar Alterações da Compra' : 'Salvar Compra e Atualizar Estoque'}
               </button>
             </form>
           </div>
@@ -1230,6 +1329,8 @@ function App() {
                 <label className="text-[11px] text-slate-400">Data da Venda</label>
                 <input
                   type="date"
+                  min="2000-01-01"
+                  max="2099-12-31"
                   required
                   value={saleMeta.sale_date}
                   onChange={e => setSaleMeta({ ...saleMeta, sale_date: e.target.value })}
