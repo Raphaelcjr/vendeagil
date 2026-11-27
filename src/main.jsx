@@ -5,7 +5,8 @@ import {
   LayoutDashboard, Package, ShoppingCart, Users, Store, Plus,
   TrendingUp, DollarSign, AlertTriangle, CheckCircle2,
   Clock, Share2, LogOut, Trash2, Edit3,
-  ShoppingBag, ChevronRight, X, Calendar, PackagePlus, Wallet
+  ShoppingBag, ChevronRight, ChevronDown, X, Calendar, PackagePlus, Wallet,
+  Settings, User, CreditCard
 } from 'lucide-react';
 
 const SUPABASE_URL = 'https://fuflpsnzgxjklbnpxnmb.supabase.co';
@@ -79,10 +80,30 @@ function App() {
   const [isPublicCatalog, setIsPublicCatalog] = useState(false);
   const [ownerIdFromUrl, setOwnerIdFromUrl] = useState(null);
 
-  const [storeName, setStoreName] = useState(() => localStorage.getItem('vendeagil_store_name') || '');
-  const [showBrandModal, setShowBrandModal] = useState(false);
-  const [brandInput, setBrandInput] = useState('');
-  const [savingBrand, setSavingBrand] = useState(false);
+  const [accountProfile, setAccountProfile] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('vendeagil_account_profile') || '{}');
+      return {
+        store_name: saved.store_name || localStorage.getItem('vendeagil_store_name') || '',
+        full_name: saved.full_name || '',
+        phone: saved.phone || '',
+        city: saved.city || ''
+      };
+    } catch {
+      return { store_name: '', full_name: '', phone: '', city: '' };
+    }
+  });
+
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsSection, setSettingsSection] = useState('account');
+  const [profileForm, setProfileForm] = useState({
+    store_name: '',
+    full_name: '',
+    phone: '',
+    city: ''
+  });
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileSavedMsg, setProfileSavedMsg] = useState('');
 
   const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
@@ -120,14 +141,32 @@ function App() {
   const [catalogCustomer, setCatalogCustomer] = useState({ name: '', phone: '', payment: 'Pix' });
   const [orderSentSuccess, setOrderSentSuccess] = useState(false);
 
-  const syncUserBrand = (currentSession) => {
-    const metaName = currentSession?.user?.user_metadata?.store_name;
-    if (typeof metaName === 'string' && metaName.trim()) {
-      setStoreName(metaName.trim());
-      localStorage.setItem('vendeagil_store_name', metaName.trim());
-    } else if (currentSession?.user?.id) {
-      const saved = localStorage.getItem(`vendeagil_store_name_${currentSession.user.id}`);
-      if (saved) setStoreName(saved);
+  const syncUserAccount = (currentSession) => {
+    const meta = currentSession?.user?.user_metadata || {};
+    const uid = currentSession?.user?.id;
+    let localByUser = {};
+    if (uid) {
+      try {
+        localByUser = JSON.parse(localStorage.getItem(`vendeagil_profile_${uid}`) || '{}');
+      } catch {
+        localByUser = {};
+      }
+    }
+
+    const merged = {
+      store_name: (meta.store_name ?? localByUser.store_name ?? localStorage.getItem('vendeagil_store_name') ?? '').trim(),
+      full_name: (meta.full_name ?? localByUser.full_name ?? '').trim(),
+      phone: (meta.phone ?? localByUser.phone ?? '').trim(),
+      city: (meta.city ?? localByUser.city ?? '').trim()
+    };
+
+    setAccountProfile(merged);
+    localStorage.setItem('vendeagil_account_profile', JSON.stringify(merged));
+    if (merged.store_name) {
+      localStorage.setItem('vendeagil_store_name', merged.store_name);
+    }
+    if (uid) {
+      localStorage.setItem(`vendeagil_profile_${uid}`, JSON.stringify(merged));
     }
   };
 
@@ -137,8 +176,16 @@ function App() {
     if (loja) {
       setIsPublicCatalog(true);
       setOwnerIdFromUrl(loja);
-      const savedStore = localStorage.getItem(`vendeagil_store_name_${loja}`);
-      if (savedStore) setStoreName(savedStore);
+      try {
+        const savedByOwner = JSON.parse(localStorage.getItem(`vendeagil_profile_${loja}`) || '{}');
+        const legacyName = localStorage.getItem(`vendeagil_store_name_${loja}`) || '';
+        const nameToUse = savedByOwner.store_name || legacyName;
+        if (nameToUse) {
+          setAccountProfile(prev => ({ ...prev, store_name: nameToUse }));
+        }
+      } catch {
+        // ignore storage parse error
+      }
       fetchPublicProducts(loja);
       setLoadingAuth(false);
       return;
@@ -146,32 +193,57 @@ function App() {
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      syncUserBrand(session);
+      syncUserAccount(session);
       setLoadingAuth(false);
       if (session) fetchAllData(session.user.id);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      syncUserBrand(session);
+      syncUserAccount(session);
       if (session) fetchAllData(session.user.id);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  const handleSaveBrand = async (e) => {
+  const openSettings = () => {
+    setProfileForm({
+      store_name: accountProfile.store_name || '',
+      full_name: accountProfile.full_name || '',
+      phone: accountProfile.phone || '',
+      city: accountProfile.city || ''
+    });
+    setProfileSavedMsg('');
+    setSettingsSection('account');
+    setShowSettingsModal(true);
+  };
+
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
-    const cleanName = brandInput.trim();
-    setSavingBrand(true);
-    setStoreName(cleanName);
-    localStorage.setItem('vendeagil_store_name', cleanName);
+    setSavingProfile(true);
+    setProfileSavedMsg('');
+
+    const cleaned = {
+      store_name: profileForm.store_name.trim(),
+      full_name: profileForm.full_name.trim(),
+      phone: profileForm.phone.trim(),
+      city: profileForm.city.trim()
+    };
+
+    setAccountProfile(cleaned);
+    localStorage.setItem('vendeagil_account_profile', JSON.stringify(cleaned));
+    localStorage.setItem('vendeagil_store_name', cleaned.store_name);
+
     if (session?.user?.id) {
-      localStorage.setItem(`vendeagil_store_name_${session.user.id}`, cleanName);
-      await supabase.auth.updateUser({ data: { store_name: cleanName } });
+      localStorage.setItem(`vendeagil_profile_${session.user.id}`, JSON.stringify(cleaned));
+      localStorage.setItem(`vendeagil_store_name_${session.user.id}`, cleaned.store_name);
+      await supabase.auth.updateUser({ data: cleaned });
     }
-    setSavingBrand(false);
-    setShowBrandModal(false);
+
+    setSavingProfile(false);
+    setProfileSavedMsg('Dados salvos com sucesso!');
+    setTimeout(() => setProfileSavedMsg(''), 3000);
   };
 
   const fetchPublicProducts = async (userId) => {
@@ -559,6 +631,11 @@ function App() {
     };
   }, [filteredOrders, filteredPurchases, products]);
 
+  const brandHeaderTitle = accountProfile.store_name || accountProfile.full_name || 'VendeÁgil';
+  const brandHeaderSubtitle = (accountProfile.store_name || accountProfile.full_name)
+    ? `VendeÁgil • ${session?.user?.email || ''}`
+    : (session?.user?.email || '');
+
   if (isPublicCatalog) {
     const cartTotal = cart.reduce((acc, i) => acc + Number(i.sell_price) * i.qty, 0);
     return (
@@ -571,7 +648,7 @@ function App() {
               </div>
               <div>
                 <h1 className="font-bold text-base leading-tight">
-                  {storeName ? `${storeName} • Catálogo` : 'Catálogo VendeÁgil'}
+                  {accountProfile.store_name ? `${accountProfile.store_name} • Catálogo` : 'Catálogo VendeÁgil'}
                 </h1>
                 <p className="text-xs text-emerald-400">Faça seu pedido online</p>
               </div>
@@ -794,24 +871,11 @@ function App() {
               <TrendingUp className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <h1 className="font-bold text-base leading-none truncate">
-                  {storeName || 'VendeÁgil'}
-                </h1>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBrandInput(storeName);
-                    setShowBrandModal(true);
-                  }}
-                  title="Definir nome da loja ou seu nome"
-                  className="p-1 rounded-md text-slate-400 hover:text-emerald-400 hover:bg-slate-800/80 transition shrink-0"
-                >
-                  <Edit3 className="w-3 h-3" />
-                </button>
-              </div>
-              <span className="text-[11px] text-slate-400 truncate block">
-                {storeName ? `VendeÁgil • ${session.user.email}` : session.user.email}
+              <h1 className="font-bold text-base leading-none truncate">
+                {brandHeaderTitle}
+              </h1>
+              <span className="text-[11px] text-slate-400 truncate block mt-0.5">
+                {brandHeaderSubtitle}
               </span>
             </div>
           </div>
@@ -835,11 +899,11 @@ function App() {
               <span>Nova Venda</span>
             </button>
             <button
-              onClick={() => supabase.auth.signOut()}
-              title="Sair"
-              className="p-2 rounded-xl bg-slate-800/70 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition"
+              onClick={openSettings}
+              title="Configurações da Conta"
+              className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/70 transition"
             >
-              <LogOut className="w-4 h-4" />
+              <Settings className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -1257,34 +1321,173 @@ function App() {
         ))}
       </nav>
 
-      {showBrandModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-          <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-base">Nome da Loja ou Seu Nome</h3>
-              <button onClick={() => setShowBrandModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
-            </div>
-            <form onSubmit={handleSaveBrand} className="space-y-3">
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1">
-                  Como quer exibir no topo (deixe vazio para usar VendeÁgil)
-                </label>
-                <input
-                  value={brandInput}
-                  onChange={e => setBrandInput(e.target.value)}
-                  maxLength={40}
-                  placeholder="Ex: RC Imports Floripa ou Raphael"
-                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm"
-                />
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Settings className="w-4 h-4 text-emerald-400" />
+                <h3 className="font-bold text-base">Configurações</h3>
               </div>
               <button
-                type="submit"
-                disabled={savingBrand}
-                className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl text-sm transition"
+                onClick={() => setShowSettingsModal(false)}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
               >
-                {savingBrand ? 'Salvando...' : 'Salvar Identificação'}
+                <X className="w-4 h-4" />
               </button>
-            </form>
+            </div>
+
+            <div className="space-y-2.5">
+              {/* Tópico 1: Minha Conta */}
+              <div className="bg-[#090d16] border border-slate-800 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setSettingsSection(settingsSection === 'account' ? '' : 'account')}
+                  className="w-full flex items-center justify-between p-3.5 text-left hover:bg-slate-800/40 transition"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
+                      <User className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-sm text-white">Minha Conta</p>
+                      <p className="text-[11px] text-slate-400">Nome da loja, dados pessoais e contato</p>
+                    </div>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      settingsSection === 'account' ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {settingsSection === 'account' && (
+                  <form onSubmit={handleSaveProfile} className="p-3.5 pt-2 border-t border-slate-800/80 space-y-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Nome da Loja / Marca (aparece no topo)</label>
+                      <input
+                        value={profileForm.store_name}
+                        onChange={e => setProfileForm({ ...profileForm, store_name: e.target.value })}
+                        maxLength={40}
+                        placeholder="Ex: RC Imports Floripa"
+                        className="w-full bg-[#111827] border border-slate-700 focus:border-emerald-500 outline-none rounded-xl px-3 py-2 text-sm"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Seu Nome Completo</label>
+                      <input
+                        value={profileForm.full_name}
+                        onChange={e => setProfileForm({ ...profileForm, full_name: e.target.value })}
+                        placeholder="Ex: Raphael Cordoni Junior"
+                        className="w-full bg-[#111827] border border-slate-700 focus:border-emerald-500 outline-none rounded-xl px-3 py-2 text-sm"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1">WhatsApp / Celular</label>
+                        <input
+                          value={profileForm.phone}
+                          onChange={e => setProfileForm({ ...profileForm, phone: e.target.value })}
+                          placeholder="(48) 99999-9999"
+                          className="w-full bg-[#111827] border border-slate-700 focus:border-emerald-500 outline-none rounded-xl px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1">Cidade / UF</label>
+                        <input
+                          value={profileForm.city}
+                          onChange={e => setProfileForm({ ...profileForm, city: e.target.value })}
+                          placeholder="Florianópolis - SC"
+                          className="w-full bg-[#111827] border border-slate-700 focus:border-emerald-500 outline-none rounded-xl px-3 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">E-mail de Acesso</label>
+                      <input
+                        value={session.user.email}
+                        disabled
+                        className="w-full bg-[#111827]/60 border border-slate-800 text-slate-400 rounded-xl px-3 py-2 text-xs cursor-not-allowed"
+                      />
+                    </div>
+
+                    {profileSavedMsg && (
+                      <p className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-2 rounded-lg">
+                        {profileSavedMsg}
+                      </p>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={savingProfile}
+                      className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs transition"
+                    >
+                      {savingProfile ? 'Salvando...' : 'Salvar Dados da Conta'}
+                    </button>
+                  </form>
+                )}
+              </div>
+
+              {/* Tópico 2: Meu Plano */}
+              <div className="bg-[#090d16] border border-slate-800 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setSettingsSection(settingsSection === 'plan' ? '' : 'plan')}
+                  className="w-full flex items-center justify-between p-3.5 text-left hover:bg-slate-800/40 transition"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-violet-500/15 text-violet-400 flex items-center justify-center">
+                      <CreditCard className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-sm text-white">Meu Plano</p>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">
+                          Gratuito
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">Assinatura e recursos da conta</p>
+                    </div>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      settingsSection === 'plan' ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {settingsSection === 'plan' && (
+                  <div className="p-3.5 pt-2.5 border-t border-slate-800/80 space-y-2.5 text-xs">
+                    <div className="bg-[#111827] border border-slate-800 rounded-xl p-3 space-y-1">
+                      <p className="font-bold text-white">Plano Atual: Acesso Completo (Beta)</p>
+                      <p className="text-slate-400">
+                        Produtos, controle de estoque, compras mensais e catálogo online liberados.
+                      </p>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Em breve: gestão de assinatura e upgrade para planos Pro diretamente por aqui.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettingsModal(false);
+                  supabase.auth.signOut();
+                }}
+                className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 transition"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sair da Conta</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
