@@ -6,7 +6,8 @@ import {
   TrendingUp, DollarSign, AlertTriangle, CheckCircle2,
   Clock, Share2, LogOut, Trash2, Edit3,
   ShoppingBag, ChevronRight, ChevronDown, X, Calendar, PackagePlus, Wallet,
-  Settings, User, CreditCard
+  Settings, User, CreditCard, Search, Copy, Download, Sparkles, MessageCircle,
+  QrCode, Award, Hourglass
 } from 'lucide-react';
 
 const SUPABASE_URL = 'https://fuflpsnzgxjklbnpxnmb.supabase.co';
@@ -68,6 +69,12 @@ const normalizeDateInput = (raw) => {
   return getTodayISO();
 };
 
+const sanitizePhoneForWhatsApp = (rawPhone) => {
+  const digits = String(rawPhone || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.startsWith('55') ? digits : `55${digits}`;
+};
+
 const isLowStockProduct = (p) => {
   const min = Number(p.min_stock ?? 0);
   if (min <= 0) return false;
@@ -79,6 +86,13 @@ function App() {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [isPublicCatalog, setIsPublicCatalog] = useState(false);
   const [ownerIdFromUrl, setOwnerIdFromUrl] = useState(null);
+  const [publicStorePhone, setPublicStorePhone] = useState('');
+
+  const [toast, setToast] = useState(null);
+  const notify = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3400);
+  };
 
   const [accountProfile, setAccountProfile] = useState(() => {
     try {
@@ -103,7 +117,8 @@ function App() {
     city: ''
   });
   const [savingProfile, setSavingProfile] = useState(false);
-  const [profileSavedMsg, setProfileSavedMsg] = useState('');
+
+  const [showShareModal, setShowShareModal] = useState(false);
 
   const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
@@ -119,6 +134,7 @@ function App() {
   const [orders, setOrders] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
+  const [seedingDemo, setSeedingDemo] = useState(false);
 
   const [showProductModal, setShowProductModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -134,12 +150,15 @@ function App() {
   });
 
   const [showSaleModal, setShowSaleModal] = useState(false);
+  const [editingOrder, setEditingOrder] = useState(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
 
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogCategory, setCatalogCategory] = useState('Todas');
   const [cart, setCart] = useState([]);
   const [showCartDrawer, setShowCartDrawer] = useState(false);
   const [catalogCustomer, setCatalogCustomer] = useState({ name: '', phone: '', payment: 'Pix' });
-  const [orderSentSuccess, setOrderSentSuccess] = useState(false);
+  const [lastPublicOrderWhatsAppUrl, setLastPublicOrderWhatsAppUrl] = useState('');
 
   const syncUserAccount = (currentSession) => {
     const meta = currentSession?.user?.user_metadata || {};
@@ -173,19 +192,28 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const loja = params.get('loja');
+    const nomeUrl = params.get('nome');
+    const wppUrl = params.get('wpp');
+
     if (loja) {
       setIsPublicCatalog(true);
       setOwnerIdFromUrl(loja);
+      if (wppUrl) setPublicStorePhone(wppUrl);
+
       try {
         const savedByOwner = JSON.parse(localStorage.getItem(`vendeagil_profile_${loja}`) || '{}');
         const legacyName = localStorage.getItem(`vendeagil_store_name_${loja}`) || '';
-        const nameToUse = savedByOwner.store_name || legacyName;
+        const nameToUse = nomeUrl || savedByOwner.store_name || legacyName;
         if (nameToUse) {
           setAccountProfile(prev => ({ ...prev, store_name: nameToUse }));
         }
+        if (!wppUrl && savedByOwner.phone) {
+          setPublicStorePhone(savedByOwner.phone);
+        }
       } catch {
-        // ignore storage parse error
+        if (nomeUrl) setAccountProfile(prev => ({ ...prev, store_name: nomeUrl }));
       }
+
       fetchPublicProducts(loja);
       setLoadingAuth(false);
       return;
@@ -214,7 +242,6 @@ function App() {
       phone: accountProfile.phone || '',
       city: accountProfile.city || ''
     });
-    setProfileSavedMsg('');
     setSettingsSection('account');
     setShowSettingsModal(true);
   };
@@ -222,7 +249,6 @@ function App() {
   const handleSaveProfile = async (e) => {
     e.preventDefault();
     setSavingProfile(true);
-    setProfileSavedMsg('');
 
     const cleaned = {
       store_name: profileForm.store_name.trim(),
@@ -242,8 +268,7 @@ function App() {
     }
 
     setSavingProfile(false);
-    setProfileSavedMsg('Dados salvos com sucesso!');
-    setTimeout(() => setProfileSavedMsg(''), 3000);
+    notify('Dados da conta atualizados!');
   };
 
   const fetchPublicProducts = async (userId) => {
@@ -271,6 +296,56 @@ function App() {
     setOrders(ordRes.data || []);
     setPurchases(purRes.data || []);
     setLoadingData(false);
+  };
+
+  const handleLoadDemoData = async () => {
+    if (!session?.user?.id || seedingDemo) return;
+    setSeedingDemo(true);
+    const uid = session.user.id;
+    const today = getTodayISO();
+
+    const demoProducts = [
+      { user_id: uid, name: 'Fone Bluetooth TWS Pro', category: 'Eletrônicos', cost_price: 45, sell_price: 99.9, stock: 8, min_stock: 3, active: true },
+      { user_id: uid, name: 'Smartwatch Esportivo', category: 'Acessórios', cost_price: 75, sell_price: 159.9, stock: 5, min_stock: 2, active: true },
+      { user_id: uid, name: 'Cabo Carregador Turbo Tipo-C', category: 'Acessórios', cost_price: 12, sell_price: 35, stock: 15, min_stock: 5, active: true }
+    ];
+
+    const { data: insertedProds } = await supabase.from('products').insert(demoProducts).select();
+
+    if (insertedProds && insertedProds.length > 0) {
+      await supabase.from('purchases').insert(
+        insertedProds.map(p => ({
+          user_id: uid,
+          product_id: p.id,
+          product_name: p.name,
+          quantity: p.stock,
+          unit_cost: p.cost_price,
+          total_cost: Number((p.stock * p.cost_price).toFixed(2)),
+          purchase_date: today
+        }))
+      );
+
+      const first = insertedProds[0];
+      await supabase.from('orders').insert([{
+        user_id: uid,
+        customer_name: 'Cliente Exemplo (Mariana)',
+        channel: 'WhatsApp',
+        payment_method: 'Pix',
+        card_fee_percent: 0,
+        discount: 0,
+        total_amount: Number(first.sell_price),
+        net_profit: Number((first.sell_price - first.cost_price).toFixed(2)),
+        status: 'paid',
+        sale_date: today,
+        items: [{ id: first.id, name: first.name, price: Number(first.sell_price), cost: Number(first.cost_price), qty: 1 }]
+      }]);
+
+      await supabase.from('products').update({ stock: first.stock - 1 }).eq('id', first.id);
+    }
+
+    await fetchAllData(uid);
+    setSeedingDemo(false);
+    notify('Dados de exemplo carregados!');
   };
 
   const handleAuth = async (e) => {
@@ -344,6 +419,7 @@ function App() {
           purchase_date: purchaseDate
         }]);
       }
+      notify('Produto atualizado!');
     } else {
       const { data: created } = await supabase.from('products').insert([payload]).select().single();
       if (stock > 0 && costPrice > 0) {
@@ -357,6 +433,7 @@ function App() {
           purchase_date: purchaseDate
         }]);
       }
+      notify('Produto cadastrado!');
     }
     setShowProductModal(false);
     setEditingProduct(null);
@@ -366,6 +443,7 @@ function App() {
   const handleDeleteProduct = async (id) => {
     if (!confirm('Excluir este produto?')) return;
     await supabase.from('products').delete().eq('id', id);
+    notify('Produto excluído.');
     fetchAllData(session.user.id);
   };
 
@@ -416,6 +494,7 @@ function App() {
           purchase_date: pDate
         })
         .eq('id', editingPurchase.id);
+      notify('Compra atualizada!');
     } else {
       await supabase.from('purchases').insert([{
         user_id: session.user.id,
@@ -432,6 +511,7 @@ function App() {
         if (unitCost > 0) updatePayload.cost_price = unitCost;
         await supabase.from('products').update(updatePayload).eq('id', prod.id);
       }
+      notify('Compra registrada e estoque atualizado!');
     }
 
     setEditingPurchase(null);
@@ -442,6 +522,7 @@ function App() {
   const handleDeletePurchase = async (id) => {
     if (!confirm('Excluir este registro de compra?')) return;
     await supabase.from('purchases').delete().eq('id', id);
+    notify('Registro de compra removido.');
     fetchAllData(session.user.id);
   };
 
@@ -455,6 +536,7 @@ function App() {
       notes: form.get('notes')
     }]);
     setShowCustomerModal(false);
+    notify('Cliente salvo!');
     fetchAllData(session.user.id);
   };
 
@@ -469,6 +551,36 @@ function App() {
     sale_date: getTodayISO()
   });
 
+  const openNewSaleModal = () => {
+    setEditingOrder(null);
+    setSaleItems([]);
+    setSaleMeta({
+      customer_name: 'Cliente Balcão',
+      channel: 'WhatsApp',
+      payment_method: 'Pix',
+      card_fee_percent: 0,
+      discount: 0,
+      status: 'paid',
+      sale_date: getTodayISO()
+    });
+    setShowSaleModal(true);
+  };
+
+  const openEditOrderModal = (ord) => {
+    setEditingOrder(ord);
+    setSaleItems(ord.items || []);
+    setSaleMeta({
+      customer_name: ord.customer_name || 'Cliente Balcão',
+      channel: ord.channel || 'WhatsApp',
+      payment_method: ord.payment_method || 'Pix',
+      card_fee_percent: Number(ord.card_fee_percent || 0),
+      discount: Number(ord.discount || 0),
+      status: ord.status || 'paid',
+      sale_date: normalizeDateInput(ord.sale_date || ord.created_at)
+    });
+    setShowSaleModal(true);
+  };
+
   const addSaleItem = (prodId) => {
     const prod = products.find(p => p.id === prodId);
     if (!prod) return;
@@ -479,9 +591,9 @@ function App() {
     });
   };
 
-  const handleCreateSale = async (e) => {
+  const handleSaveSale = async (e) => {
     e.preventDefault();
-    if (saleItems.length === 0) return alert('Adicione pelo menos 1 produto.');
+    if (saleItems.length === 0) return notify('Adicione pelo menos 1 produto.', 'error');
 
     const subtotal = saleItems.reduce((acc, i) => acc + i.price * i.qty, 0);
     const totalCost = saleItems.reduce((acc, i) => acc + i.cost * i.qty, 0);
@@ -491,30 +603,66 @@ function App() {
     const netProfit = total - totalCost - feeValue;
     const sDate = saleMeta.sale_date || getTodayISO();
 
-    await supabase.from('orders').insert([{
-      user_id: session.user.id,
-      customer_name: saleMeta.customer_name || 'Cliente Balcão',
-      channel: saleMeta.channel,
-      payment_method: saleMeta.payment_method,
-      card_fee_percent: Number(saleMeta.card_fee_percent) || 0,
-      discount,
-      total_amount: total,
-      net_profit: netProfit,
-      status: saleMeta.status,
-      sale_date: sDate,
-      items: saleItems
-    }]);
+    if (editingOrder) {
+      await supabase
+        .from('orders')
+        .update({
+          customer_name: saleMeta.customer_name || 'Cliente Balcão',
+          channel: saleMeta.channel,
+          payment_method: saleMeta.payment_method,
+          card_fee_percent: Number(saleMeta.card_fee_percent) || 0,
+          discount,
+          total_amount: total,
+          net_profit: netProfit,
+          status: saleMeta.status,
+          sale_date: sDate,
+          items: saleItems
+        })
+        .eq('id', editingOrder.id);
 
-    for (const item of saleItems) {
-      const p = products.find(pr => pr.id === item.id);
-      if (p) {
-        await supabase.from('products').update({ stock: Math.max(0, p.stock - item.qty) }).eq('id', p.id);
+      notify('Venda atualizada!');
+    } else {
+      await supabase.from('orders').insert([{
+        user_id: session.user.id,
+        customer_name: saleMeta.customer_name || 'Cliente Balcão',
+        channel: saleMeta.channel,
+        payment_method: saleMeta.payment_method,
+        card_fee_percent: Number(saleMeta.card_fee_percent) || 0,
+        discount,
+        total_amount: total,
+        net_profit: netProfit,
+        status: saleMeta.status,
+        sale_date: sDate,
+        items: saleItems
+      }]);
+
+      for (const item of saleItems) {
+        const p = products.find(pr => pr.id === item.id);
+        if (p) {
+          await supabase.from('products').update({ stock: Math.max(0, p.stock - item.qty) }).eq('id', p.id);
+        }
       }
+      notify('Venda registrada com sucesso!');
     }
 
     setSaleItems([]);
-    setSaleMeta(prev => ({ ...prev, sale_date: getTodayISO(), discount: 0 }));
+    setEditingOrder(null);
     setShowSaleModal(false);
+    fetchAllData(session.user.id);
+  };
+
+  const handleDeleteOrder = async (order) => {
+    if (!confirm('Excluir esta venda permanentemente?')) return;
+    if (order.status !== 'cancelled') {
+      for (const item of order.items || []) {
+        const p = products.find(pr => pr.id === item.id);
+        if (p) {
+          await supabase.from('products').update({ stock: Number(p.stock || 0) + Number(item.qty || 0) }).eq('id', p.id);
+        }
+      }
+    }
+    await supabase.from('orders').delete().eq('id', order.id);
+    notify('Venda excluída.');
     fetchAllData(session.user.id);
   };
 
@@ -528,6 +676,7 @@ function App() {
         }
       }
     }
+    notify(newStatus === 'paid' ? 'Venda marcada como paga!' : 'Venda cancelada.');
     fetchAllData(session.user.id);
   };
 
@@ -554,16 +703,34 @@ function App() {
       await supabase.from('products').update({ stock: Math.max(0, item.stock - item.qty) }).eq('id', item.id);
     }
 
+    const cleanWpp = sanitizePhoneForWhatsApp(publicStorePhone);
+    if (cleanWpp) {
+      const itemsText = cart.map(i => `• ${i.qty}x ${i.name} (${formatBRL(Number(i.sell_price) * i.qty)})`).join('\n');
+      const storeLabel = accountProfile.store_name || 'a loja';
+      const msg = `Olá! Acabei de fazer um pedido no catálogo de *${storeLabel}*:\n\n${itemsText}\n\n*Total:* ${formatBRL(total)}\n*Pagamento:* ${catalogCustomer.payment}\n*Cliente:* ${catalogCustomer.name}`;
+      setLastPublicOrderWhatsAppUrl(`https://wa.me/${cleanWpp}?text=${encodeURIComponent(msg)}`);
+    } else {
+      setLastPublicOrderWhatsAppUrl('sent');
+    }
+
     setCart([]);
     setShowCartDrawer(false);
-    setOrderSentSuccess(true);
     fetchPublicProducts(ownerIdFromUrl);
   };
 
+  const catalogShareUrl = useMemo(() => {
+    if (!session?.user?.id) return '';
+    const params = new URLSearchParams();
+    params.set('loja', session.user.id);
+    if (accountProfile.store_name) params.set('nome', accountProfile.store_name);
+    if (accountProfile.phone) params.set('wpp', accountProfile.phone);
+    return `${window.location.origin}/?${params.toString()}`;
+  }, [session?.user?.id, accountProfile.store_name, accountProfile.phone]);
+
   const copyCatalogLink = () => {
-    const url = `${window.location.origin}/?loja=${session.user.id}`;
-    navigator.clipboard.writeText(url);
-    alert('Link do seu catálogo copiado:\n\n' + url);
+    if (!catalogShareUrl) return;
+    navigator.clipboard.writeText(catalogShareUrl);
+    notify('Link do catálogo copiado!');
   };
 
   const resolvePurchaseProductName = (pur) => {
@@ -618,6 +785,48 @@ function App() {
       0
     );
 
+    // Top lucro por produto no período
+    const profitMap = new Map();
+    validOrders.forEach(ord => {
+      (ord.items || []).forEach(item => {
+        const key = item.id || item.name;
+        const qty = Number(item.qty || 0);
+        const itemProfit = (Number(item.price || 0) - Number(item.cost || 0)) * qty;
+        const curr = profitMap.get(key) || { name: item.name, qty: 0, profit: 0 };
+        curr.qty += qty;
+        curr.profit += itemProfit;
+        profitMap.set(key, curr);
+      });
+    });
+    const topProfitProducts = Array.from(profitMap.values())
+      .filter(p => p.profit > 0)
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, 3);
+
+    // Produtos parados (com estoque > 0 e sem venda nos últimos 30 dias)
+    const lastSaleByProduct = new Map();
+    orders.filter(o => o.status !== 'cancelled').forEach(ord => {
+      const d = String(ord.sale_date || ord.created_at || '').slice(0, 10);
+      (ord.items || []).forEach(item => {
+        const key = item.id || item.name;
+        const prev = lastSaleByProduct.get(key);
+        if (!prev || d > prev) lastSaleByProduct.set(key, d);
+      });
+    });
+
+    const nowMs = Date.now();
+    const stagnantProducts = products
+      .filter(p => Number(p.stock || 0) > 0)
+      .map(p => {
+        const lastSold = lastSaleByProduct.get(p.id) || lastSaleByProduct.get(p.name) || String(p.created_at || '').slice(0, 10);
+        const refMs = lastSold ? new Date(`${lastSold}T12:00:00`).getTime() : nowMs;
+        const daysIdle = Math.floor((nowMs - refMs) / (1000 * 60 * 60 * 24));
+        return { ...p, daysIdle };
+      })
+      .filter(p => p.daysIdle >= 30)
+      .sort((a, b) => b.daysIdle - a.daysIdle)
+      .slice(0, 4);
+
     return {
       revenue,
       unitsSold,
@@ -627,17 +836,69 @@ function App() {
       stockPotentialRevenue,
       stockUnitsTotal,
       count: validOrders.length,
-      lowStock
+      lowStock,
+      topProfitProducts,
+      stagnantProducts
     };
-  }, [filteredOrders, filteredPurchases, products]);
+  }, [filteredOrders, filteredPurchases, products, orders]);
+
+  const handleCopyMonthSummary = () => {
+    const title = accountProfile.store_name || 'VendeÁgil';
+    const text = [
+      `📊 *Resumo ${title} — ${formatMonthLabel(selectedMonth)}*`,
+      `• Faturamento: ${formatBRL(stats.revenue)} (${stats.count} vendas / ${stats.unitsSold} un.)`,
+      `• Gasto em Compras: ${formatBRL(stats.spentInPurchases)}`,
+      `• Lucro Líquido: ${formatBRL(stats.profit)}`,
+      `• Valor em Estoque: ${formatBRL(stats.stockPotentialRevenue)} (${stats.stockUnitsTotal} un.)`,
+      `• A Receber: ${formatBRL(stats.pending)}`
+    ].join('\n');
+    navigator.clipboard.writeText(text);
+    notify('Resumo do mês copiado!');
+  };
+
+  const handleDownloadOrdersCSV = () => {
+    const header = ['Data', 'Cliente', 'Canal', 'Pagamento', 'Status', 'Total', 'Lucro Liquido'];
+    const rows = filteredOrders.map(o => [
+      formatShortDate(o.sale_date || o.created_at),
+      `"${String(o.customer_name || '').replace(/"/g, '""')}"`,
+      o.channel || '',
+      o.payment_method || '',
+      o.status || '',
+      Number(o.total_amount || 0).toFixed(2).replace('.', ','),
+      Number(o.net_profit || 0).toFixed(2).replace('.', ',')
+    ]);
+    const csv = [header.join(';'), ...rows.map(r => r.join(';'))].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vendeagil-${selectedMonth}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    notify('Planilha CSV baixada!');
+  };
 
   const brandHeaderTitle = accountProfile.store_name || accountProfile.full_name || 'VendeÁgil';
   const brandHeaderSubtitle = (accountProfile.store_name || accountProfile.full_name)
     ? `VendeÁgil • ${session?.user?.email || ''}`
     : (session?.user?.email || '');
 
+  const ToastBanner = toast ? (
+    <div className="fixed bottom-20 md:bottom-6 right-4 z-[70] max-w-xs bg-[#111827] border border-emerald-500/50 shadow-2xl rounded-2xl px-4 py-3 flex items-center gap-2.5 text-xs text-white">
+      <CheckCircle2 className={`w-4 h-4 shrink-0 ${toast.type === 'error' ? 'text-rose-400' : 'text-emerald-400'}`} />
+      <span>{toast.message}</span>
+    </div>
+  ) : null;
+
   if (isPublicCatalog) {
     const cartTotal = cart.reduce((acc, i) => acc + Number(i.sell_price) * i.qty, 0);
+    const categories = ['Todas', ...Array.from(new Set(products.map(p => p.category || 'Geral')))];
+    const visibleCatalogProducts = products.filter(p => {
+      const matchesCat = catalogCategory === 'Todas' || (p.category || 'Geral') === catalogCategory;
+      const matchesQuery = !catalogSearch.trim() || p.name.toLowerCase().includes(catalogSearch.toLowerCase());
+      return matchesCat && matchesQuery;
+    });
+
     return (
       <div className="min-h-screen bg-[#090d16] text-slate-100 pb-24">
         <header className="sticky top-0 z-30 bg-[#0d1320]/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-4">
@@ -663,30 +924,74 @@ function App() {
           </div>
         </header>
 
-        <main className="max-w-3xl mx-auto p-4">
-          {orderSentSuccess && (
-            <div className="mb-5 p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
-                <div>
-                  <p className="font-semibold text-emerald-300">Pedido enviado com sucesso!</p>
-                  <p className="text-xs text-slate-300">O vendedor já recebeu seu pedido no painel.</p>
+        <main className="max-w-3xl mx-auto p-4 space-y-4">
+          {lastPublicOrderWhatsAppUrl && (
+            <div className="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
+                  <div>
+                    <p className="font-semibold text-emerald-300">Pedido registrado com sucesso!</p>
+                    <p className="text-xs text-slate-300">O vendedor já recebeu no painel.</p>
+                  </div>
                 </div>
+                <button onClick={() => setLastPublicOrderWhatsAppUrl('')} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
               </div>
-              <button onClick={() => setOrderSentSuccess(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+              {lastPublicOrderWhatsAppUrl.startsWith('http') && (
+                <a
+                  href={lastPublicOrderWhatsAppUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Enviar resumo no WhatsApp da loja</span>
+                </a>
+              )}
+            </div>
+          )}
+
+          {products.length > 0 && (
+            <div className="space-y-2.5">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  value={catalogSearch}
+                  onChange={e => setCatalogSearch(e.target.value)}
+                  placeholder="Buscar produto..."
+                  className="w-full bg-[#111827] border border-slate-800 focus:border-emerald-500 outline-none rounded-xl pl-10 pr-4 py-2.5 text-sm"
+                />
+              </div>
+              {categories.length > 2 && (
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
+                  {categories.map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => setCatalogCategory(cat)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
+                        catalogCategory === cat
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'bg-[#111827] text-slate-400 border border-slate-800'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {loadingData ? (
             <p className="text-center text-slate-400 py-12">Carregando produtos...</p>
-          ) : products.length === 0 ? (
+          ) : visibleCatalogProducts.length === 0 ? (
             <div className="text-center py-16 bg-[#111827] rounded-2xl border border-slate-800">
               <Package className="w-10 h-10 text-slate-500 mx-auto mb-2" />
-              <p className="text-slate-300 font-medium">Nenhum produto disponível no momento.</p>
+              <p className="text-slate-300 font-medium">Nenhum produto encontrado.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {products.map(prod => (
+              {visibleCatalogProducts.map(prod => (
                 <div key={prod.id} className="bg-[#111827] border border-slate-800/90 rounded-2xl p-4 flex flex-col justify-between">
                   <div>
                     <div className="flex items-start justify-between gap-2">
@@ -712,6 +1017,7 @@ function App() {
                           }
                           return [...prev, { ...prod, qty: 1 }];
                         });
+                        notify(`${prod.name} adicionado à sacola!`);
                       }}
                       className="bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs px-3.5 py-2 rounded-xl transition"
                     >
@@ -789,6 +1095,7 @@ function App() {
             </div>
           </div>
         )}
+        {ToastBanner}
       </div>
     );
   }
@@ -882,17 +1189,14 @@ function App() {
 
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={copyCatalogLink}
+              onClick={() => setShowShareModal(true)}
               className="bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
             >
               <Share2 className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Link Catálogo</span>
             </button>
             <button
-              onClick={() => {
-                setSaleMeta(prev => ({ ...prev, sale_date: getTodayISO() }));
-                setShowSaleModal(true);
-              }}
+              onClick={openNewSaleModal}
               className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition"
             >
               <Plus className="w-4 h-4" />
@@ -938,30 +1242,60 @@ function App() {
             <span className="font-semibold">Período analisado:</span>
             <span className="text-emerald-400 font-bold">{formatMonthLabel(selectedMonth)}</span>
           </div>
-          <select
-            value={selectedMonth}
-            onChange={e => setSelectedMonth(e.target.value)}
-            className="bg-[#090d16] border border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold text-white outline-none focus:border-emerald-500"
-          >
-            <option value="all">Todos os meses</option>
-            {availableMonths.map(m => (
-              <option key={m} value={m}>{formatMonthLabel(m)}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={handleCopyMonthSummary}
+              title="Copiar resumo do período"
+              className="bg-[#090d16] hover:bg-slate-800 border border-slate-700 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 flex items-center gap-1 transition"
+            >
+              <Copy className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Copiar Resumo</span>
+            </button>
+            <button
+              onClick={handleDownloadOrdersCSV}
+              title="Baixar vendas em CSV"
+              className="bg-[#090d16] hover:bg-slate-800 border border-slate-700 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 flex items-center gap-1 transition"
+            >
+              <Download className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">CSV</span>
+            </button>
+            <select
+              value={selectedMonth}
+              onChange={e => setSelectedMonth(e.target.value)}
+              className="bg-[#090d16] border border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold text-white outline-none focus:border-emerald-500"
+            >
+              <option value="all">Todos os meses</option>
+              {availableMonths.map(m => (
+                <option key={m} value={m}>{formatMonthLabel(m)}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {tab === 'dashboard' && (
           <>
             {(products.length === 0 || orders.length === 0) && (
               <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <div>
                     <h2 className="font-bold text-sm text-white">Primeiros passos</h2>
                     <p className="text-xs text-slate-400">Configure o essencial em poucos minutos</p>
                   </div>
-                  <span className="text-xs text-emerald-400 font-semibold">
-                    {[products.length > 0, orders.length > 0].filter(Boolean).length} de 2 concluídos
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {products.length === 0 && orders.length === 0 && (
+                      <button
+                        onClick={handleLoadDemoData}
+                        disabled={seedingDemo}
+                        className="bg-violet-500/15 hover:bg-violet-500/25 text-violet-300 border border-violet-500/30 px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>{seedingDemo ? 'Carregando...' : 'Carregar exemplo'}</span>
+                      </button>
+                    )}
+                    <span className="text-xs text-emerald-400 font-semibold">
+                      {[products.length > 0, orders.length > 0].filter(Boolean).length} de 2 concluídos
+                    </span>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <button
@@ -975,7 +1309,7 @@ function App() {
                     <ChevronRight className="w-4 h-4 text-slate-500" />
                   </button>
                   <button
-                    onClick={() => setShowSaleModal(true)}
+                    onClick={openNewSaleModal}
                     className="w-full flex items-center justify-between p-3 rounded-xl bg-[#090d16] border border-slate-800 hover:border-emerald-500/40 text-left"
                   >
                     <div className="flex items-center gap-2.5">
@@ -1036,6 +1370,46 @@ function App() {
               </div>
             </div>
 
+            {(stats.topProfitProducts.length > 0 || stats.stagnantProducts.length > 0) && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {stats.topProfitProducts.length > 0 && (
+                  <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
+                    <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                      <Award className="w-4 h-4" /> Campeões de Lucro ({formatMonthLabel(selectedMonth)})
+                    </h3>
+                    <div className="space-y-2">
+                      {stats.topProfitProducts.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between bg-[#090d16] border border-slate-800/80 px-3 py-2 rounded-xl text-xs">
+                          <span className="font-medium text-slate-200 truncate pr-2">
+                            {idx + 1}. {item.name} ({item.qty} un.)
+                          </span>
+                          <span className="font-bold text-emerald-400 shrink-0">{formatBRL(item.profit)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {stats.stagnantProducts.length > 0 && (
+                  <div className="bg-[#111827] border border-slate-800 rounded-2xl p-4">
+                    <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                      <Hourglass className="w-4 h-4" /> Estoque Parado (+30 dias sem venda)
+                    </h3>
+                    <div className="space-y-2">
+                      {stats.stagnantProducts.map(p => (
+                        <div key={p.id} className="flex items-center justify-between bg-[#090d16] border border-slate-800/80 px-3 py-2 rounded-xl text-xs">
+                          <span className="font-medium text-slate-200 truncate pr-2">
+                            {p.name} ({p.stock} un.)
+                          </span>
+                          <span className="text-amber-400 font-semibold shrink-0">{p.daysIdle} dias</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {stats.lowStock.length > 0 && (
               <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-4">
                 <h3 className="text-xs font-bold text-rose-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
@@ -1090,10 +1464,7 @@ function App() {
             <div className="flex items-center justify-between">
               <h2 className="font-bold text-lg">Pedidos e Vendas ({filteredOrders.length})</h2>
               <button
-                onClick={() => {
-                  setSaleMeta(prev => ({ ...prev, sale_date: getTodayISO() }));
-                  setShowSaleModal(true);
-                }}
+                onClick={openNewSaleModal}
                 className="bg-emerald-500 text-slate-950 font-bold text-xs px-3.5 py-2 rounded-xl"
               >
                 + Nova Venda
@@ -1128,13 +1499,13 @@ function App() {
                       </div>
                     ))}
                   </div>
-                  <div className="flex items-center justify-between pt-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <span className={`text-xs font-semibold ${
                       ord.status === 'paid' ? 'text-emerald-400' : ord.status === 'pending' ? 'text-amber-400' : 'text-rose-400'
                     }`}>
                       Status: {ord.status === 'paid' ? 'Pago' : ord.status === 'pending' ? 'Aguardando Pagamento' : 'Cancelado'}
                     </span>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-1.5">
                       {ord.status === 'pending' && (
                         <button
                           onClick={() => handleOrderStatus(ord, 'paid')}
@@ -1143,14 +1514,28 @@ function App() {
                           Marcar Pago
                         </button>
                       )}
+                      <button
+                        onClick={() => openEditOrderModal(ord)}
+                        title="Editar venda"
+                        className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
                       {ord.status !== 'cancelled' && (
                         <button
                           onClick={() => handleOrderStatus(ord, 'cancelled')}
-                          className="bg-rose-500/15 text-rose-400 px-3 py-1.5 rounded-lg text-xs"
+                          className="bg-amber-500/15 text-amber-400 px-2.5 py-1.5 rounded-lg text-xs"
                         >
                           Cancelar
                         </button>
                       )}
+                      <button
+                        onClick={() => handleDeleteOrder(ord)}
+                        title="Excluir venda"
+                        className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1321,6 +1706,66 @@ function App() {
         ))}
       </nav>
 
+      {/* Modal Compartilhar Catálogo + QR Code */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <QrCode className="w-4 h-4 text-emerald-400" />
+                <h3 className="font-bold text-base">Catálogo Online da Loja</h3>
+              </div>
+              <button onClick={() => setShowShareModal(false)} className="p-1.5 rounded-lg bg-slate-800 text-slate-400">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center bg-[#090d16] border border-slate-800 rounded-2xl p-4 space-y-3">
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(catalogShareUrl)}`}
+                alt="QR Code do Catálogo"
+                className="w-40 h-40 rounded-xl bg-white p-2"
+              />
+              <p className="text-xs text-slate-400 text-center">
+                Aponte a câmera ou envie o link abaixo para o cliente pedir direto pelo celular.
+              </p>
+              {!accountProfile.phone && (
+                <p className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-lg text-center">
+                  Dica: cadastre seu WhatsApp em Configurações &gt; Minha Conta para o cliente enviar o pedido direto no seu WhatsApp.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <input
+                readOnly
+                value={catalogShareUrl}
+                className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-300"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={copyCatalogLink}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copiar Link</span>
+                </button>
+                <a
+                  href={catalogShareUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5"
+                >
+                  <Store className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Abrir Catálogo</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Configurações (Minha Conta + Meu Plano + Sair) */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto space-y-4">
@@ -1351,7 +1796,7 @@ function App() {
                     </div>
                     <div>
                       <p className="font-semibold text-sm text-white">Minha Conta</p>
-                      <p className="text-[11px] text-slate-400">Nome da loja, dados pessoais e contato</p>
+                      <p className="text-[11px] text-slate-400">Nome da loja, WhatsApp e dados pessoais</p>
                     </div>
                   </div>
                   <ChevronDown
@@ -1386,7 +1831,7 @@ function App() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       <div>
-                        <label className="text-[11px] text-slate-400 block mb-1">WhatsApp / Celular</label>
+                        <label className="text-[11px] text-slate-400 block mb-1">WhatsApp da Loja (para pedidos)</label>
                         <input
                           value={profileForm.phone}
                           onChange={e => setProfileForm({ ...profileForm, phone: e.target.value })}
@@ -1413,12 +1858,6 @@ function App() {
                         className="w-full bg-[#111827]/60 border border-slate-800 text-slate-400 rounded-xl px-3 py-2 text-xs cursor-not-allowed"
                       />
                     </div>
-
-                    {profileSavedMsg && (
-                      <p className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-2 rounded-lg">
-                        {profileSavedMsg}
-                      </p>
-                    )}
 
                     <button
                       type="submit"
@@ -1461,15 +1900,28 @@ function App() {
 
                 {settingsSection === 'plan' && (
                   <div className="p-3.5 pt-2.5 border-t border-slate-800/80 space-y-2.5 text-xs">
-                    <div className="bg-[#111827] border border-slate-800 rounded-xl p-3 space-y-1">
-                      <p className="font-bold text-white">Plano Atual: Acesso Completo (Beta)</p>
+                    <div className="bg-[#111827] border border-emerald-500/30 rounded-xl p-3 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold text-white">Plano Atual: Gratuito (Acesso Beta)</p>
+                        <span className="text-[10px] text-emerald-400 font-semibold">Ativo</span>
+                      </div>
                       <p className="text-slate-400">
-                        Produtos, controle de estoque, compras mensais e catálogo online liberados.
+                        Produtos ilimitados no Beta, controle de compras mensais, catálogo online e relatórios.
                       </p>
                     </div>
-                    <p className="text-[11px] text-slate-500">
-                      Em breve: gestão de assinatura e upgrade para planos Pro diretamente por aqui.
-                    </p>
+                    <div className="bg-[#111827] border border-slate-800 rounded-xl p-3 space-y-1.5">
+                      <p className="font-bold text-violet-300">Plano VendeÁgil Pro (Em breve)</p>
+                      <p className="text-slate-400 text-[11px]">
+                        Múltiplos usuários, domínio próprio no catálogo, etiquetas e automação de cobrança.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => notify('Você já tem acesso total liberado na fase Beta!')}
+                        className="w-full mt-1 bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 border border-violet-500/30 font-semibold py-2 rounded-lg text-[11px] transition"
+                      >
+                        Notificar quando lançar
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1626,10 +2078,10 @@ function App() {
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-base">Registrar Nova Venda</h3>
-              <button onClick={() => setShowSaleModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
+              <h3 className="font-bold text-base">{editingOrder ? 'Editar Venda' : 'Registrar Nova Venda'}</h3>
+              <button onClick={() => { setShowSaleModal(false); setEditingOrder(null); }}><X className="w-4 h-4 text-slate-400" /></button>
             </div>
-            <form onSubmit={handleCreateSale} className="space-y-3">
+            <form onSubmit={handleSaveSale} className="space-y-3">
               <div>
                 <label className="text-[11px] text-slate-400">Adicionar Produto</label>
                 <select
@@ -1681,6 +2133,7 @@ function App() {
                 <select value={saleMeta.channel} onChange={e => setSaleMeta({ ...saleMeta, channel: e.target.value })} className="bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm">
                   <option value="WhatsApp">WhatsApp</option>
                   <option value="Instagram">Instagram</option>
+                  <option value="Catálogo Online">Catálogo Online</option>
                   <option value="Loja Física">Loja Física</option>
                 </select>
                 <select value={saleMeta.payment_method} onChange={e => setSaleMeta({ ...saleMeta, payment_method: e.target.value })} className="bg-[#090d16] border border-slate-700 rounded-xl px-3 py-2 text-sm">
@@ -1705,12 +2158,13 @@ function App() {
                   <select value={saleMeta.status} onChange={e => setSaleMeta({ ...saleMeta, status: e.target.value })} className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-2 py-2 text-sm">
                     <option value="paid">Pago</option>
                     <option value="pending">Pendente</option>
+                    <option value="cancelled">Cancelado</option>
                   </select>
                 </div>
               </div>
 
               <button type="submit" className="w-full bg-emerald-500 text-slate-950 font-bold py-3 rounded-xl text-sm">
-                Concluir Venda
+                {editingOrder ? 'Salvar Alterações da Venda' : 'Concluir Venda'}
               </button>
             </form>
           </div>
@@ -1735,6 +2189,8 @@ function App() {
           </div>
         </div>
       )}
+
+      {ToastBanner}
     </div>
   );
 }
