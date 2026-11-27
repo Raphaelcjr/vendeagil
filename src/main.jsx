@@ -79,6 +79,11 @@ function App() {
   const [isPublicCatalog, setIsPublicCatalog] = useState(false);
   const [ownerIdFromUrl, setOwnerIdFromUrl] = useState(null);
 
+  const [storeName, setStoreName] = useState(() => localStorage.getItem('vendeagil_store_name') || '');
+  const [showBrandModal, setShowBrandModal] = useState(false);
+  const [brandInput, setBrandInput] = useState('');
+  const [savingBrand, setSavingBrand] = useState(false);
+
   const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -115,12 +120,25 @@ function App() {
   const [catalogCustomer, setCatalogCustomer] = useState({ name: '', phone: '', payment: 'Pix' });
   const [orderSentSuccess, setOrderSentSuccess] = useState(false);
 
+  const syncUserBrand = (currentSession) => {
+    const metaName = currentSession?.user?.user_metadata?.store_name;
+    if (typeof metaName === 'string' && metaName.trim()) {
+      setStoreName(metaName.trim());
+      localStorage.setItem('vendeagil_store_name', metaName.trim());
+    } else if (currentSession?.user?.id) {
+      const saved = localStorage.getItem(`vendeagil_store_name_${currentSession.user.id}`);
+      if (saved) setStoreName(saved);
+    }
+  };
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const loja = params.get('loja');
     if (loja) {
       setIsPublicCatalog(true);
       setOwnerIdFromUrl(loja);
+      const savedStore = localStorage.getItem(`vendeagil_store_name_${loja}`);
+      if (savedStore) setStoreName(savedStore);
       fetchPublicProducts(loja);
       setLoadingAuth(false);
       return;
@@ -128,17 +146,33 @@ function App() {
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      syncUserBrand(session);
       setLoadingAuth(false);
       if (session) fetchAllData(session.user.id);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      syncUserBrand(session);
       if (session) fetchAllData(session.user.id);
     });
 
     return () => subscription.unsubscribe();
   }, []);
+
+  const handleSaveBrand = async (e) => {
+    e.preventDefault();
+    const cleanName = brandInput.trim();
+    setSavingBrand(true);
+    setStoreName(cleanName);
+    localStorage.setItem('vendeagil_store_name', cleanName);
+    if (session?.user?.id) {
+      localStorage.setItem(`vendeagil_store_name_${session.user.id}`, cleanName);
+      await supabase.auth.updateUser({ data: { store_name: cleanName } });
+    }
+    setSavingBrand(false);
+    setShowBrandModal(false);
+  };
 
   const fetchPublicProducts = async (userId) => {
     setLoadingData(true);
@@ -536,7 +570,9 @@ function App() {
                 <Store className="w-5 h-5" />
               </div>
               <div>
-                <h1 className="font-bold text-base leading-tight">Catálogo VendeÁgil</h1>
+                <h1 className="font-bold text-base leading-tight">
+                  {storeName ? `${storeName} • Catálogo` : 'Catálogo VendeÁgil'}
+                </h1>
                 <p className="text-xs text-emerald-400">Faça seu pedido online</p>
               </div>
             </div>
@@ -752,18 +788,35 @@ function App() {
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 pb-24 md:pb-8">
       <header className="sticky top-0 z-30 bg-[#0d1320]/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-3.5">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
               <TrendingUp className="w-5 h-5" />
             </div>
-            <div>
-              <h1 className="font-bold text-base leading-none">VendeÁgil</h1>
-              <span className="text-[11px] text-slate-400">{session.user.email}</span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <h1 className="font-bold text-base leading-none truncate">
+                  {storeName || 'VendeÁgil'}
+                </h1>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBrandInput(storeName);
+                    setShowBrandModal(true);
+                  }}
+                  title="Definir nome da loja ou seu nome"
+                  className="p-1 rounded-md text-slate-400 hover:text-emerald-400 hover:bg-slate-800/80 transition shrink-0"
+                >
+                  <Edit3 className="w-3 h-3" />
+                </button>
+              </div>
+              <span className="text-[11px] text-slate-400 truncate block">
+                {storeName ? `VendeÁgil • ${session.user.email}` : session.user.email}
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={copyCatalogLink}
               className="bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
@@ -1203,6 +1256,38 @@ function App() {
           </button>
         ))}
       </nav>
+
+      {showBrandModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-md p-5">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-base">Nome da Loja ou Seu Nome</h3>
+              <button onClick={() => setShowBrandModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
+            </div>
+            <form onSubmit={handleSaveBrand} className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">
+                  Como quer exibir no topo (deixe vazio para usar VendeÁgil)
+                </label>
+                <input
+                  value={brandInput}
+                  onChange={e => setBrandInput(e.target.value)}
+                  maxLength={40}
+                  placeholder="Ex: RC Imports Floripa ou Raphael"
+                  className="w-full bg-[#090d16] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={savingBrand}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl text-sm transition"
+              >
+                {savingBrand ? 'Salvando...' : 'Salvar Identificação'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showProductModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
